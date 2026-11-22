@@ -256,6 +256,16 @@ function onMessage(m) {
       state.cameras = state.cameras.map((c) => (c.id === m.cameraId ? { ...c, ...m.settings } : c));
       changed();
       break;
+    case 'events.deleted': {
+      const gone = new Set(m.eventIds);
+      m.notificationIds.forEach((id) => state.alerts.delete(id));
+      for (const [id, a] of state.alerts) if (gone.has(a.eventId)) state.alerts.delete(id);
+      state.activity = state.activity.filter((e) => !gone.has(e.id));
+      state.deleted = gone;
+      state.eventsVersion++;
+      changed();
+      break;
+    }
     case 'event':
       api.get(`/api/events/${m.event.id}`).then((ev) => {
         state.activity = [ev, ...state.activity.filter((x) => x.id !== ev.id)].slice(0, 50);
@@ -331,6 +341,28 @@ function toast(a) {
   while ($toasts.children.length > 4) $toasts.lastChild.remove();
   setTimeout(() => el.remove(), 9000);
   document.title = `(${unreadCount()}) Apex Security Console`;
+}
+
+/** Delete events (and their frames + notifications). Applies locally at once; the server broadcasts to other clients. */
+async function deleteEvents(body) {
+  const r = await api.post('/api/events/delete', body);
+  onMessage({ t: 'events.deleted', eventIds: r.eventIds, notificationIds: r.notificationIds });
+  return r.deleted;
+}
+
+const checkbox = (checked, onclick) => h('button.check', { role: 'checkbox', 'aria-checked': String(!!checked), onclick: (e) => { e.stopPropagation(); onclick(); } });
+
+/**
+ * Selection bar for lists. `allMatching` means "everything matching the current filter",
+ * including items not loaded yet; it's executed server-side.
+ */
+function selectionBar({ count, allMatching, loaded, onSelectAll, onClear, onDelete, confirming, busy }) {
+  return h('div.selbar', {},
+    h('span.data.c-cyan', { text: allMatching ? 'ALL MATCHING SELECTED' : `${count} SELECTED` }),
+    h('span.grow'),
+    allMatching || count === loaded ? null : btn(`Select all`, onSelectAll, { small: true }),
+    btn('Clear', onClear, { small: true, variant: 'dim' }),
+    btn(busy ? 'Deleting…' : confirming ? `Confirm delete${allMatching ? ' all' : ` ${count}`}` : 'Delete', onDelete, { small: true, variant: 'red', primary: confirming, disabled: busy || (!allMatching && count === 0) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +523,8 @@ function dashboardView() {
       topbar('APEX SECURITY', location.host, {
         actions: [
           linkIndicator(),
+          btn('Live', () => (location.hash = '#/live'), { small: true }),
+          btn('Events', () => (location.hash = '#/events'), { small: true, variant: 'dim' }),
           h('span.badge-wrap', {}, btn('Alerts', () => (location.hash = '#/alerts'), { small: true, variant: unread ? 'amber' : '' }), unread ? h('span.badge', { text: unread > 99 ? '99+' : unread }) : null),
           btn('Sys', () => (location.hash = '#/sys'), { small: true, variant: 'dim' }),
         ],
@@ -646,6 +680,8 @@ function cameraView(id) {
 
 function alertsView() {
   let filter = 'all';
+  let selecting = false, confirming = false, busy = false, err = '';
+  const selected = new Set();
   const el = h('div.fade-in');
   const update = () => {
     const all = alertsSorted();
@@ -653,14 +689,36 @@ function alertsView() {
     const shown = filter === 'all' ? all : filter === 'unread' ? all.filter((a) => !a.read) : all.filter((a) => a.cameraId === filter);
     const groups = new Map();
     shown.forEach((a) => { const d = fmt.day(a.createdAt); groups.set(d, [...(groups.get(d) ?? []), a]); });
-    const f = (key, label, c) => chip(label, filter === key ? c : 'var(--text-dim)', filter === key, () => { filter = key; update(); });
+    const f = (key, label, c) => chip(label, filter === key ? c : 'var(--text-dim)', filter === key, () => { filter = key; selected.clear(); confirming = false; update(); });
+    for (const id of selected) if (!state.alerts.has(id)) selected.delete(id);
+    const toggleSel = (id) => { selected.has(id) ? selected.delete(id) : selected.add(id); confirming = false; update(); };
+    async function del() {
+      if (!confirming) { confirming = true; return update(); }
+      busy = true; update();
+      try {
+        await deleteEvents({ ids: [...selected].map((id) => state.alerts.get(id)?.eventId).filter(Boolean) });
+        selected.clear(); selecting = false; err = '';
+      } catch (e) { err = e.message; }
+      busy = false; confirming = false; update();
+    }
     el.replaceChildren(
-      topbar('Alerts', `${unread} UNREAD · ${all.length} TOTAL`, { back: '#/', actions: unread ? [btn('Mark all read', () => markRead(all.filter((a) => !a.read).map((a) => a.id)), { variant: 'amber', small: true })] : [] }),
+      topbar('Alerts', `${unread} UNREAD · ${all.length} TOTAL`, { back: '#/', actions: [
+        unread ? btn('Mark all read', () => markRead(all.filter((a) => !a.read).map((a) => a.id)), { variant: 'amber', small: true }) : null,
+        all.length ? btn(selecting ? 'Done' : 'Select', () => { selecting = !selecting; selected.clear(); confirming = false; update(); }, { small: true, variant: selecting ? '' : 'dim' }) : null,
+      ].filter(Boolean) }),
       h('main', {},
         h('div.filters', {}, f('all', 'All', 'var(--cyan)'), f('unread', `Unread ${unread}`, 'var(--amber)'), state.cameras.map((c) => f(c.id, c.name, 'var(--cyan)'))),
+        selecting ? selectionBar({
+          count: selected.size, loaded: shown.length, confirming, busy,
+          onSelectAll: () => { shown.forEach((a) => selected.add(a.id)); confirming = false; update(); },
+          onClear: () => { selected.clear(); confirming = false; update(); },
+          onDelete: del,
+        }) : null,
+        err ? h('div.err', { text: err }) : null,
         shown.length ? [...groups].map(([day, list]) => [
           sectionHeader(day, h('span.data-sm', { text: `${list.length}` })),
-          h('div.list', {}, list.map((a) => h('div.row-item' + (a.read ? '' : '.unread'), { '--c': a.read ? 'var(--hairline-dim)' : 'var(--amber)', onclick: () => (location.hash = `#/event/${a.eventId}?alert=${a.id}`) },
+          h('div.list', {}, list.map((a) => h('div.row-item' + (a.read ? '' : '.unread') + (selected.has(a.id) ? '.selected' : ''), { '--c': a.read ? 'var(--hairline-dim)' : 'var(--amber)', onclick: () => (selecting ? toggleSel(a.id) : (location.hash = `#/event/${a.eventId}?alert=${a.id}`)) },
+            selecting ? checkbox(selected.has(a.id), () => toggleSel(a.id)) : null,
             h('span.stripe'), eventImg(a.imageUrl, 'thumb'),
             h('div.grow', {},
               h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, chip(fmt.kind(a.kind), color.kind(a.kind), !a.read), a.read ? null : h('span.data-sm.c-amber', { text: 'NEW' })),
@@ -675,9 +733,13 @@ function alertsView() {
 
 function eventView(eventId, alertId) {
   const el = h('div.fade-in');
-  let ev = null, err = null;
+  let ev = null, err = null, confirmDel = false;
   if (alertId) markRead([alertId]);
   const update = () => {
+    if (state.deleted?.has(eventId)) {
+      el.replaceChildren(topbar('Event deleted', '', { back: '#/' }), h('main', {}, empty('Deleted', 'This event was deleted.')));
+      return;
+    }
     const a = alertId ? state.alerts.get(alertId) : null;
     const kind = ev?.kind ?? a?.kind ?? '';
     const kc = color.kind(kind);
@@ -699,7 +761,12 @@ function eventView(eventId, alertId) {
               ['Event', ev.id.slice(0, 8).toUpperCase()],
             ]) : h('div.data-sm', { text: err ?? 'Loading…' })),
           h('div', { style: { height: '14px' } }),
-          camId ? btn('Go live ›', () => (location.hash = `#/cam/${camId}`), { primary: true, block: true }) : null))));
+          camId ? btn('Go live ›', () => (location.hash = `#/cam/${camId}`), { primary: true, block: true }) : null,
+          h('div', { style: { height: '10px' } }),
+          btn(confirmDel ? 'Confirm delete event' : 'Delete event', async () => {
+            if (!confirmDel) { confirmDel = true; return update(); }
+            try { await deleteEvents({ ids: [eventId] }); history.length > 1 ? history.back() : (location.hash = '#/'); } catch (e) { err = e.message; confirmDel = false; update(); }
+          }, { variant: 'red', primary: confirmDel, block: true })))));
   };
   api.get(`/api/events/${eventId}`).then((e) => { ev = e; update(); }).catch((e) => { err = e.message; update(); });
   update();
@@ -802,6 +869,179 @@ function systemView() {
   return { el, update };
 }
 
+/**
+ * Live wall: every enabled camera playing live at once. Players are kept across
+ * status updates (only added/removed as cameras come and go) so video never restarts.
+ */
+function galleryView() {
+  const players = new Map(); // cameraId -> { player, tile, nameEl, pipEl }
+  let layout = store.get('wall.layout') ?? 'auto';
+  let wallMode = false;
+  const wall = h('div.wall');
+  const head = h('div');
+  const shell = h('div');
+  const emptyEl = h('div');
+
+  function applyLayout() {
+    wall.className = 'wall' + (layout === 'auto' ? ' auto' : '');
+    wall.style.setProperty('--cols', layout === 'auto' ? '' : layout);
+    if (wallMode) {
+      const n = players.size, cols = layout === 'auto' ? Math.ceil(Math.sqrt(n)) : Number(layout);
+      wall.className = 'wall';
+      wall.style.setProperty('--cols', String(cols || 1));
+      wall.style.gridAutoRows = `${100 / Math.max(1, Math.ceil(n / (cols || 1)))}vh`;
+    } else wall.style.gridAutoRows = '';
+  }
+
+  function tileFor(c) {
+    const player = new LivePlayer(c.id);
+    const nameEl = h('div.title', { text: c.name });
+    const sub = h('div.data-sm');
+    const tile = h('div.tile', {},
+      player.el,
+      h('div.name', { onclick: () => (location.hash = `#/cam/${c.id}`), title: 'Open camera' }, nameEl, sub),
+      h('div.tools', {},
+        btn('Open', () => (location.hash = `#/cam/${c.id}`), { small: true }),
+        btn('Full', () => player.el.requestFullscreen?.(), { small: true, variant: 'dim' })));
+    return { player, tile, nameEl, sub };
+  }
+
+  function update() {
+    const cams = state.cameras.filter((c) => c.enabled);
+    // add / remove players without touching the ones already playing
+    for (const [id, p] of players) if (!cams.some((c) => c.id === id)) { p.player.destroy(); p.tile.remove(); players.delete(id); }
+    cams.forEach((c) => {
+      let p = players.get(c.id);
+      if (!p) { p = tileFor(c); players.set(c.id, p); }
+      wall.append(p.tile); // keeps camera order
+      p.nameEl.textContent = c.name;
+      const st = c.status ?? {};
+      p.sub.textContent = `${(st.stream ?? '').toUpperCase()}${st.detector === 'running' ? ' · DET' : ''}`;
+      p.sub.style.color = color.stream(st.stream);
+      p.tile.classList.toggle('offline', st.stream !== 'online' && st.stream !== 'connecting');
+    });
+    applyLayout();
+    const online = cams.filter((c) => c.status?.stream === 'online').length;
+    const seg = h('div.segmented', {}, [['auto', 'AUTO'], ['1', '1×'], ['2', '2×'], ['3', '3×'], ['4', '4×']].map(([v, t]) =>
+      h('button', { 'aria-pressed': String(layout === v), onclick: () => { layout = v; store.set('wall.layout', v); update(); } }, t)));
+    head.replaceChildren(wallMode ? '' : topbar('Live wall', `${online}/${cams.length} ONLINE · ${players.size} FEEDS`, { back: '#/', actions: [linkIndicator(), seg, btn('Wall mode', enterWall, { small: true })] }));
+    emptyEl.replaceChildren(cams.length ? '' : empty('No cameras', 'Add a camera to see it here.', btn('+ Add camera', () => (location.hash = '#/add'), { primary: true })));
+  }
+
+  // Wall mode: browser fullscreen, every feed tiled to fit the screen, no chrome.
+  function enterWall() {
+    wallMode = true;
+    shell.className = 'wall-full';
+    shell.requestFullscreen?.().catch(() => {});
+    update();
+  }
+  const onFs = () => { if (!document.fullscreenElement && wallMode) { wallMode = false; shell.className = ''; update(); } };
+  document.addEventListener('fullscreenchange', onFs);
+  const onKey = (e) => { if (e.key === 'Escape' && wallMode) { wallMode = false; shell.className = ''; update(); } };
+  document.addEventListener('keydown', onKey);
+
+  shell.append(wall);
+  const el = h('div.fade-in', {}, head, h('main', { style: { maxWidth: 'none', paddingTop: '12px' } }, emptyEl, shell));
+  update();
+  return {
+    el, update,
+    destroy: () => {
+      players.forEach((p) => p.player.destroy());
+      document.removeEventListener('fullscreenchange', onFs);
+      document.removeEventListener('keydown', onKey);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    },
+  };
+}
+
+/** Event history across cameras: filter, select, select all (server-side), delete. */
+function eventsView() {
+  let cameraId = '', kind = '';
+  let items = [], loading = false, done = false, lastVersion = state.eventsVersion;
+  let selecting = false, allMatching = false, confirming = false, busy = false, err = '';
+  const selected = new Set();
+  const el = h('div.fade-in');
+
+  async function load(reset) {
+    if (loading) return;
+    loading = true;
+    if (reset) { items = []; done = false; }
+    try {
+      const q = new URLSearchParams({ limit: '100' });
+      if (cameraId) q.set('cameraId', cameraId);
+      if (kind) q.set('kind', kind);
+      if (!reset && items.length) q.set('before', String(items[items.length - 1].createdAt));
+      const page = await api.get(`/api/events?${q}`);
+      items = reset ? page : items.concat(page.filter((e) => !items.some((x) => x.id === e.id)));
+      done = page.length < 100;
+      err = '';
+    } catch (e) { err = e.message; }
+    loading = false;
+    update();
+  }
+
+  const clearSel = () => { selected.clear(); allMatching = false; confirming = false; };
+  const toggleSel = (id) => {
+    if (allMatching) { allMatching = false; items.forEach((e) => selected.add(e.id)); }
+    selected.has(id) ? selected.delete(id) : selected.add(id);
+    confirming = false; update();
+  };
+  async function del() {
+    if (!confirming) { confirming = true; return update(); }
+    busy = true; update();
+    try {
+      const n = await deleteEvents(allMatching ? { all: true, ...(cameraId ? { cameraId } : {}), ...(kind ? { kind } : {}) } : { ids: [...selected] });
+      toast2(`${n} event${n === 1 ? '' : 's'} deleted`);
+      clearSel(); selecting = false;
+      await load(true);
+    } catch (e) { err = e.message; }
+    busy = false; confirming = false; update();
+  }
+
+  function update() {
+    if (state.deleted) items = items.filter((e) => !state.deleted.has(e.id));
+    if (state.eventsVersion !== lastVersion && !selecting) { lastVersion = state.eventsVersion; load(true); }
+    const sel = (key, val, label, c = 'var(--cyan)') => chip(label, val === key ? c : 'var(--text-dim)', val === key, () => {});
+    const camChip = (id, label) => { const c = sel(id, cameraId, label); c.onclick = () => { cameraId = id; clearSel(); load(true); }; return c; };
+    const kindChip = (k, label) => { const c = sel(k, kind, label, k ? color.kind(k) : 'var(--cyan)'); c.onclick = () => { kind = k; clearSel(); load(true); }; return c; };
+    const isSel = (id) => allMatching || selected.has(id);
+    el.replaceChildren(
+      topbar('Events', `${items.length}${done ? '' : '+'} LOADED`, { back: '#/', actions: [
+        items.length ? btn(selecting ? 'Done' : 'Select', () => { selecting = !selecting; clearSel(); update(); }, { small: true, variant: selecting ? '' : 'dim' }) : null,
+      ].filter(Boolean) }),
+      h('main', {},
+        h('div.toolbar', {}, h('span.label', { text: 'Camera' }), camChip('', 'All'), state.cameras.map((c) => camChip(c.id, c.name))),
+        h('div.toolbar', { style: { marginTop: '-4px' } }, h('span.label', { text: 'Class' }), kindChip('', 'All'), kindChip('person', 'Human'), kindChip('animal', 'Animal')),
+        selecting ? selectionBar({
+          count: selected.size, loaded: items.length, allMatching, confirming, busy,
+          onSelectAll: () => { allMatching = true; selected.clear(); confirming = false; update(); },
+          onClear: () => { clearSel(); update(); },
+          onDelete: del,
+        }) : null,
+        allMatching && !done ? h('div.data-sm.c-amber', { text: 'Includes events not loaded yet: everything matching these filters will be deleted.', style: { marginBottom: '8px' } }) : null,
+        err ? h('div.err', { text: err }) : null,
+        items.length ? h('div.list', {}, items.map((ev) => h('div.row-item' + (selecting && isSel(ev.id) ? '.selected' : ''), { '--c': color.kind(ev.kind), onclick: () => (selecting ? toggleSel(ev.id) : (location.hash = `#/event/${ev.id}`)) },
+          selecting ? checkbox(isSel(ev.id), () => toggleSel(ev.id)) : null,
+          h('span.stripe'), eventImg(ev.imageUrl, 'thumb'),
+          h('div.grow', {},
+            h('div.data', { text: `${fmt.kind(ev.kind)} · ${ev.cameraName.toUpperCase()}` }),
+            h('div.data-sm', { text: `${ev.label} ${fmt.pct(ev.confidence)}${ev.trackId != null ? ` · TRK #${ev.trackId}` : ''}` })),
+          h('div.right', {}, h('div.data.dim', { text: fmt.stamp(ev.createdAt) }), h('div.data-sm.faint', { text: fmt.ago(ev.createdAt) })))))
+          : loading ? h('p.faint', { text: 'Loading…' }) : empty('No events', 'Nothing matches these filters.'),
+        !done && items.length ? h('div', { style: { textAlign: 'center', marginTop: '14px' } }, btn(loading ? 'Loading…' : 'Load more', () => load(false), { disabled: loading })) : null));
+  }
+  load(true);
+  update();
+  return { el, update };
+}
+
+/** Small neutral confirmation toast. */
+function toast2(text) {
+  const el = h('div.toast', { style: { borderColor: 'rgba(56,225,255,0.45)' } }, h('span.data.c-cyan', { text }));
+  $toasts.prepend(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
 // ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
@@ -811,6 +1051,8 @@ function route() {
   const q = new URLSearchParams(query ?? '');
   if (parts[0] === 'cam' && parts[1]) return { name: 'cam', key: `cam:${parts[1]}`, make: () => cameraView(parts[1]) };
   if (parts[0] === 'event' && parts[1]) return { name: 'event', key: `event:${parts[1]}`, make: () => eventView(parts[1], q.get('alert')) };
+  if (parts[0] === 'live') return { name: 'live', key: 'live', make: galleryView };
+  if (parts[0] === 'events') return { name: 'events', key: 'events', make: eventsView };
   if (parts[0] === 'alerts') return { name: 'alerts', key: 'alerts', make: alertsView };
   if (parts[0] === 'add') return { name: 'add', key: 'add', make: setupView };
   if (parts[0] === 'sys') return { name: 'sys', key: 'sys', make: systemView };

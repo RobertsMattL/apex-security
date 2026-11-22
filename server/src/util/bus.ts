@@ -12,6 +12,7 @@ export interface BusEvents {
   'notification.read': [notificationId: string, userId: string, readAt: number];
   'event.created': [event: { id: string; cameraId: string; kind: string }];
   'notification.created': [n: NotificationDto];
+  'events.deleted': [eventIds: string[], notificationIds: string[]];
 }
 
 export class Bus extends EventEmitter<BusEvents> {}

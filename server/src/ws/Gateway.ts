@@ -50,6 +50,7 @@ export class Gateway implements DeliveryTransport {
     bus.on('camera.removed', (cameraId) => this.broadcast({ t: 'camera.removed', cameraId }));
     bus.on('settings.updated', (cameraId, settings) => this.broadcast({ t: 'settings.updated', cameraId, settings }));
     bus.on('event.created', (e) => this.broadcast({ t: 'event', event: e }));
+    bus.on('events.deleted', (eventIds, notificationIds) => this.broadcast({ t: 'events.deleted', eventIds, notificationIds }));
     bus.on('notification.read', (id, userId, readAt) => {
       for (const c of this.clients.values()) if (c.principal.userId === userId) this.write(c, { t: 'notification.read', id, readAt });
     });

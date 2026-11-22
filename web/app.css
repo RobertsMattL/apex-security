@@ -240,3 +240,28 @@ input[type="range"]:disabled { accent-color: var(--text-faint); }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .hero-img { aspect-ratio: 16 / 9; position: relative; border-radius: 3px; overflow: hidden; background: var(--void); }
 .hero-img img { width: 100%; height: 100%; object-fit: contain; }
+
+/* ---- live wall ------------------------------------------------------------- */
+.wall { display: grid; gap: 8px; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); }
+.wall.auto { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+.wall .tile { position: relative; border: 1px solid var(--hairline); border-radius: 3px; overflow: hidden; background: #000; }
+.wall .tile .name { position: absolute; left: 12px; bottom: 10px; z-index: 2; cursor: pointer; }
+.wall .tile .name:hover .title { color: var(--cyan); }
+.wall .tile .tools { position: absolute; right: 10px; bottom: 8px; z-index: 2; display: flex; gap: 6px; opacity: 0; transition: opacity 0.15s; }
+.wall .tile:hover .tools { opacity: 1; }
+.wall .tile .frame { border-radius: 0; }
+.wall .tile.offline .frame::after { content: "NO SIGNAL"; position: absolute; inset: 0; display: grid; place-items: center; font: 600 15px var(--mono); letter-spacing: 2.4px; color: var(--text-faint); }
+.wall-full { position: fixed; inset: 0; z-index: 40; background: var(--void); padding: 0; }
+.wall-full .wall { height: 100vh; gap: 2px; }
+.wall-full .wall .tile { border: 0; border-radius: 0; }
+.wall-full .wall .frame { aspect-ratio: auto; height: 100%; }
+
+/* ---- selection --------------------------------------------------------------- */
+.check { width: 18px; height: 18px; flex: none; border: 1px solid var(--text-faint); border-radius: 2px; display: grid; place-items: center; cursor: pointer; background: transparent; padding: 0; }
+.check[aria-checked="true"] { border-color: var(--cyan); background: rgba(56, 225, 255, 0.16); }
+.check[aria-checked="true"]::after { content: ""; width: 8px; height: 8px; background: var(--cyan); }
+.row-item.selected { border-color: rgba(56, 225, 255, 0.55); background: rgba(56, 225, 255, 0.06); }
+.selbar { position: sticky; top: 56px; z-index: 9; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; padding: 8px 10px; border: 1px solid rgba(56, 225, 255, 0.35); border-radius: 3px; background: rgba(7, 9, 11, 0.92); backdrop-filter: blur(8px); }
+.selbar .grow { flex: 1; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.toolbar .grow { flex: 1; }

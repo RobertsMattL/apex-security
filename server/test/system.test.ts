@@ -198,3 +198,39 @@ describe('notification delivery', () => {
     expect(s.app.gateway.isConnected(t.deviceId)).toBe(false);
   });
 });
+
+describe('event deletion', () => {
+  it('deletes single and bulk events with frames, notifications and deliveries, and tells clients', async () => {
+    const { existsSync } = await import('node:fs');
+    const s = await boot();
+    const t = await setupAndLogin(s.base);
+    const a = await addCamera(s, t.accessToken, 'Front');
+    const b = await addCamera(s, t.accessToken, 'Back');
+    for (const cam of [a, b]) {
+      await api(s.base, `/api/cameras/${cam.camera.id}/settings`, { method: 'PUT', token: t.accessToken, body: { listeners: [{ kind: 'person', cooldownSec: 0 }] } });
+      for (let i = 1; i <= 3; i++) { cam.detector.feed(personFrame(i, i)); await sleep(20); }
+    }
+    await sleep(80);
+    expect(s.app.events.list({}).length).toBe(6);
+    const client = await TestClient.connect(s.base, t.accessToken);
+
+    const one = s.app.events.list({ cameraId: a.camera.id })[0];
+    expect(existsSync(one.imagePath!)).toBe(true);
+    expect((await api(s.base, `/api/events/${one.id}`, { method: 'DELETE', token: t.accessToken })).status).toBe(200);
+    expect(existsSync(one.imagePath!)).toBe(false);
+    const msg = await client.next((m) => m.t === 'events.deleted');
+    expect(msg.eventIds).toEqual([one.id]);
+    expect(msg.notificationIds.length).toBe(1);
+    expect((await api(s.base, `/api/events/${one.id}`, { method: 'DELETE', token: t.accessToken })).status).toBe(404);
+
+    // "Select all" scoped to one camera leaves the other camera alone.
+    const r = await api(s.base, '/api/events/delete', { token: t.accessToken, body: { all: true, cameraId: a.camera.id } });
+    expect(r.body.deleted).toBe(2);
+    expect(s.app.events.list({}).map((e) => e.cameraId)).toEqual([b.camera.id, b.camera.id, b.camera.id]);
+    const orphans = s.app.db.prepare('SELECT COUNT(*) AS c FROM deliveries d LEFT JOIN notifications n ON n.id = d.notification_id WHERE n.id IS NULL').get() as { c: number };
+    expect(orphans.c).toBe(0);
+
+    expect((await api(s.base, '/api/events/delete', { token: t.accessToken, body: {} })).status).toBe(400);
+    client.close();
+  });
+});

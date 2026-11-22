@@ -208,6 +208,20 @@ export function registerRoutes(app: FastifyInstance, d: ApiDeps) {
       if (!e) return reply.code(404).send({ error: 'event not found' });
       return { ...e, imagePath: undefined, imageUrl: e.imagePath ? signedImageUrl(d.secrets, e.id) : null, cameraName: d.cameras.name(e.cameraId) };
     });
+    // Delete events (and their frames + notifications): by id, or everything matching a filter.
+    r.delete('/api/events/:id', async (req, reply) => {
+      const out = await d.events.delete({ ids: [(req.params as { id: string }).id] });
+      if (!out.eventIds.length) return reply.code(404).send({ error: 'event not found' });
+      return { deleted: out.eventIds.length, eventIds: out.eventIds, notificationIds: out.notificationIds };
+    });
+    r.post('/api/events/delete', async (req) => {
+      const b = z
+        .object({ ids: z.array(z.string()).max(5000).optional(), all: z.boolean().optional(), cameraId: z.string().optional(), kind: z.string().optional() })
+        .refine((x) => x.all === true || (x.ids && x.ids.length > 0), 'provide ids, or all: true')
+        .parse(req.body);
+      const out = await d.events.delete(b);
+      return { deleted: out.eventIds.length, eventIds: out.eventIds, notificationIds: out.notificationIds };
+    });
     r.get('/api/notifications', async (req) => {
       const q = z
         .object({ unread: z.coerce.boolean().optional(), cameraId: z.string().optional(), before: z.coerce.number().optional(), limit: z.coerce.number().optional() })

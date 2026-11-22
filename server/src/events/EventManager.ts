@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CameraManager } from '../cameras/CameraManager.js';
-import type { DB } from '../db/database.js';
+import { tx, type DB } from '../db/database.js';
 import type { FrameSink } from '../detection/DetectionEngine.js';
 import type { ListenerRegistry } from '../detection/listeners/index.js';
 import type { DetectionFrame, Detector, TrackedObject } from '../detection/types.js';
@@ -149,6 +150,43 @@ export class EventManager implements FrameSink {
       .prepare(`INSERT INTO events (id, camera_id, kind, label, confidence, track_id, box, frame_w, frame_h, image_path, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(ev.id, ev.cameraId, ev.kind, ev.label, ev.confidence, ev.trackId, ev.box ? JSON.stringify(ev.box) : null, ev.frameW, ev.frameH, ev.imagePath, ev.createdAt);
+  }
+
+  /**
+   * Delete events with their captured frames. Notifications and per-device deliveries
+   * cascade in the database; clients are told so they drop them from their inboxes.
+   * Pass ids, or `all` (optionally scoped to one camera / kind).
+   */
+  async delete(q: { ids?: string[]; all?: boolean; cameraId?: string; kind?: string }): Promise<{ eventIds: string[]; notificationIds: string[] }> {
+    let rows: Array<{ id: string; image_path: string | null }>;
+    if (q.all) {
+      const where: string[] = [];
+      const args: string[] = [];
+      if (q.cameraId) where.push('camera_id = ?'), args.push(q.cameraId);
+      if (q.kind) where.push('kind = ?'), args.push(q.kind);
+      rows = this.db.prepare(`SELECT id, image_path FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`).all(...args) as typeof rows;
+    } else {
+      const ids = [...new Set(q.ids ?? [])].slice(0, 5000);
+      if (!ids.length) return { eventIds: [], notificationIds: [] };
+      rows = this.db.prepare(`SELECT id, image_path FROM events WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) as typeof rows;
+    }
+    if (!rows.length) return { eventIds: [], notificationIds: [] };
+    const eventIds = rows.map((r) => r.id);
+    let notificationIds: string[] = [];
+    tx(this.db, () => {
+      for (let i = 0; i < eventIds.length; i += 500) {
+        const chunk = eventIds.slice(i, i + 500);
+        const ph = chunk.map(() => '?').join(',');
+        notificationIds = notificationIds.concat(
+          (this.db.prepare(`SELECT id FROM notifications WHERE event_id IN (${ph})`).all(...chunk) as Array<{ id: string }>).map((r) => r.id),
+        );
+        this.db.prepare(`DELETE FROM events WHERE id IN (${ph})`).run(...chunk);
+      }
+    });
+    await Promise.all(rows.filter((r) => r.image_path).map((r) => unlink(r.image_path!).catch(() => {})));
+    log.info(`deleted ${eventIds.length} event(s), ${notificationIds.length} notification(s)`);
+    this.bus.emit('events.deleted', eventIds, notificationIds);
+    return { eventIds, notificationIds };
   }
 
   get(id: string): DetectionEvent | undefined {
