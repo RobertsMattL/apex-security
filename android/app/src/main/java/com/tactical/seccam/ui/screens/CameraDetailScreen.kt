@@ -41,6 +41,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tactical.seccam.data.DetectionEventItem
+import com.tactical.seccam.data.EventRef
 import com.tactical.seccam.data.ListenerSettings
 import com.tactical.seccam.data.ProbeResult
 import com.tactical.seccam.data.Repository
@@ -116,7 +117,7 @@ fun CameraDetailScreen(repo: Repository, cameraId: String, onBack: () -> Unit, o
                 if (events.isEmpty()) Text("Nothing detected yet.", style = Tac.Body.copy(color = Tac.TextFaint))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(events, key = { it.id }) { ev ->
-                        Column(Modifier.width(150.dp).clickable { onEvent(ev.id) }) {
+                        Column(Modifier.width(150.dp).clickable { repo.setEventSequence(events.map { EventRef(it.id) }); onEvent(ev.id) }) {
                             Box {
                                 EventImage(ev.id, ev.imageUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(2.dp)))
                                 Box(Modifier.padding(5.dp)) { Chip(Fmt.kind(ev.kind), Tac.kindColor(ev.kind), filled = true) }

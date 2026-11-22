@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tactical.seccam.data.Camera
 import com.tactical.seccam.data.DetectionEventItem
+import com.tactical.seccam.data.EventRef
 import com.tactical.seccam.data.Repository
 import com.tactical.seccam.ui.components.CameraSnapshot
 import com.tactical.seccam.ui.components.Chip
@@ -105,7 +106,7 @@ fun DashboardScreen(
                 if (activity.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) { Text("No detections yet.", style = Tac.Body.copy(color = Tac.TextFaint)) }
                 } else {
-                    items(activity.take(12), key = { "a" + it.id }, span = { GridItemSpan(maxLineSpan) }) { ev -> ActivityRow(ev) { onEvent(ev.id) } }
+                    items(activity.take(12), key = { "a" + it.id }, span = { GridItemSpan(maxLineSpan) }) { ev -> ActivityRow(ev) { repo.setEventSequence(activity.map { EventRef(it.id) }); onEvent(ev.id) } }
                 }
             }
         }

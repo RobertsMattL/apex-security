@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -41,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tactical.seccam.data.AlertItem
 import com.tactical.seccam.data.DetectionEventItem
+import com.tactical.seccam.data.EventRef
 import com.tactical.seccam.data.Repository
 import com.tactical.seccam.ui.components.Chip
 import com.tactical.seccam.ui.components.EmptyState
@@ -121,7 +125,7 @@ fun AlertsScreen(repo: Repository, onBack: () -> Unit, onOpen: (AlertItem) -> Un
                         item(key = "h$day") { SectionHeader(day) { Text("${list.size}", style = Tac.DataSmall) } }
                         items(list, key = { it.id }) { a ->
                             AlertRow(a, selecting = selecting, selected = a.id in selected) {
-                                if (selecting) { selected = if (a.id in selected) selected - a.id else selected + a.id; confirming = false } else onOpen(a)
+                                if (selecting) { selected = if (a.id in selected) selected - a.id else selected + a.id; confirming = false } else { repo.setEventSequence(shown.map { EventRef(it.eventId, it.id) }); onOpen(a) }
                             }
                         }
                     }
@@ -170,59 +174,88 @@ private fun AlertRow(a: AlertItem, selecting: Boolean = false, selected: Boolean
     }
 }
 
-/** Detection event: captured frame, metadata, jump to live. Opening it sends the read receipt. */
+/**
+ * Detection event detail. Swipe left/right to move through the list it was opened from
+ * (alerts, a camera's detections, recent activity). Each viewed alert gets its read receipt.
+ */
 @Composable
 fun EventDetailScreen(repo: Repository, eventId: String, alertId: String?, onBack: () -> Unit, onLive: (String) -> Unit) {
-    var ev by remember { mutableStateOf<DetectionEventItem?>(null) }
+    val seq by repo.eventSequence.collectAsStateWithLifecycle()
+    val alerts by repo.alerts.alerts.collectAsStateWithLifecycle()
+    // Page through the originating list if this event is in it; otherwise just this one event.
+    val opened = remember { EventRef(eventId, alertId) }
+    val items = remember(seq) { if (seq.any { it.eventId == opened.eventId }) seq else listOf(opened) }
+    val pager = rememberPagerState(initialPage = items.indexOfFirst { it.eventId == opened.eventId }.coerceAtLeast(0)) { items.size }
+    val cache = remember { mutableStateMapOf<String, DetectionEventItem>() }
+    var deletedSingle by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pager.settledPage, items) { items.getOrNull(pager.settledPage)?.alertId?.let { repo.markRead(listOf(it)) } }
+    // The opened event was deleted and there is nothing left to show.
+    LaunchedEffect(items.isEmpty(), deletedSingle) { if (items.isEmpty() || deletedSingle) onBack() }
+    if (items.isEmpty()) return
+
+    val cur = items[pager.currentPage.coerceIn(0, items.lastIndex)]
+    val curAlert = cur.alertId?.let { id -> alerts.firstOrNull { it.id == id } }
+    val curEv = cache[cur.eventId]
+    val kind = curEv?.kind ?: curAlert?.kind ?: ""
+    FullScreen {
+        Column(Modifier.fillMaxSize()) {
+            TopBar(
+                "${Fmt.kind(kind)} DETECTED",
+                subtitle = listOfNotNull((curEv?.cameraName ?: curAlert?.cameraName)?.uppercase(), if (items.size > 1) "${pager.currentPage + 1} / ${items.size}" else null).joinToString(" · "),
+                onBack = onBack,
+            ) {
+                if (items.size > 1) Text("‹ SWIPE ›", style = Tac.DataSmall.copy(color = Tac.TextFaint))
+            }
+            HorizontalPager(pager, key = { items[it].eventId }, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize()) { page ->
+                EventPage(repo, items[page], cache, onLive, onDeleted = { if (items.size <= 1) deletedSingle = true })
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String, DetectionEventItem>, onLive: (String) -> Unit, onDeleted: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val alert = alertId?.let { repo.alerts.get(it) }
-
-    LaunchedEffect(eventId) {
-        runCatching { repo.api.event(eventId) }.onSuccess { ev = it }.onFailure { error = it.message }
+    val alert = ref.alertId?.let { repo.alerts.get(it) }
+    LaunchedEffect(ref.eventId) {
+        if (cache[ref.eventId] == null) runCatching { repo.api.event(ref.eventId) }.onSuccess { cache[ref.eventId] = it }.onFailure { error = it.message }
     }
-    LaunchedEffect(alertId) { alertId?.let { repo.markRead(listOf(it)) } }
-
-    val kind = ev?.kind ?: alert?.kind ?: ""
-    val c = Tac.kindColor(kind)
-    FullScreen {
-        Column(Modifier.fillMaxSize()) {
-            TopBar("${Fmt.kind(kind)} DETECTED", subtitle = (ev?.cameraName ?: alert?.cameraName ?: "").uppercase(), onBack = onBack)
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(14.dp)) {
-                Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp)) {
-                    EventImage(eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                }
-                Spacer(Modifier.height(14.dp))
-                GlassPanel(Modifier.fillMaxWidth(), accent = c.copy(alpha = 0.6f)) {
-                    Text("// TARGET", style = Tac.Label.copy(color = c))
-                    Spacer(Modifier.height(6.dp))
-                    val e = ev
-                    if (e != null) {
-                        KeyValue("Class", "${Fmt.kind(e.kind)} (${e.label})", c)
-                        KeyValue("Confidence", Fmt.pct(e.confidence))
-                        KeyValue("Track", e.trackId?.let { "#$it" } ?: "—")
-                        KeyValue("Camera", e.cameraName)
-                        KeyValue("Time", Fmt.stamp(e.createdAt))
-                        KeyValue("Age", Fmt.ago(e.createdAt))
-                        KeyValue("Event", e.id.take(8).uppercase())
-                    } else {
-                        Text(error ?: "Loading…", style = Tac.DataSmall)
-                    }
-                }
-                Spacer(Modifier.height(14.dp))
-                val camId = ev?.cameraId ?: alert?.cameraId
-                if (camId != null) TacButton("Go live ›", { onLive(camId) }, primary = true, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(10.dp))
-                TacButton(
-                    if (confirmDelete) "Confirm delete event" else "Delete event",
-                    {
-                        if (!confirmDelete) confirmDelete = true
-                        else scope.launch { runCatching { repo.deleteEvents(listOf(eventId)) }.onSuccess { onBack() }.onFailure { error = it.message; confirmDelete = false } }
-                    },
-                    accent = Tac.Red, primary = confirmDelete, modifier = Modifier.fillMaxWidth(),
-                )
+    val ev = cache[ref.eventId]
+    val c = Tac.kindColor(ev?.kind ?: alert?.kind ?: "")
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(14.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp)) {
+            EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        }
+        Spacer(Modifier.height(14.dp))
+        GlassPanel(Modifier.fillMaxWidth(), accent = c.copy(alpha = 0.6f)) {
+            Text("// TARGET", style = Tac.Label.copy(color = c))
+            Spacer(Modifier.height(6.dp))
+            if (ev != null) {
+                KeyValue("Class", "${Fmt.kind(ev.kind)} (${ev.label})", c)
+                KeyValue("Confidence", Fmt.pct(ev.confidence))
+                KeyValue("Track", ev.trackId?.let { "#$it" } ?: "—")
+                KeyValue("Camera", ev.cameraName)
+                KeyValue("Time", Fmt.stamp(ev.createdAt))
+                KeyValue("Age", Fmt.ago(ev.createdAt))
+                KeyValue("Event", ev.id.take(8).uppercase())
+            } else {
+                Text(error ?: "Loading…", style = Tac.DataSmall)
             }
         }
+        Spacer(Modifier.height(14.dp))
+        val camId = ev?.cameraId ?: alert?.cameraId
+        if (camId != null) TacButton("Go live ›", { onLive(camId) }, primary = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        TacButton(
+            if (confirmDelete) "Confirm delete event" else "Delete event",
+            {
+                if (!confirmDelete) confirmDelete = true
+                else scope.launch { runCatching { repo.deleteEvents(listOf(ref.eventId)) }.onSuccess { onDeleted() }.onFailure { error = it.message; confirmDelete = false } }
+            },
+            accent = Tac.Red, primary = confirmDelete, modifier = Modifier.fillMaxWidth(),
+        )
     }
 }

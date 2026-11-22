@@ -104,7 +104,10 @@ private fun AppRoot(repo: Repository, openAlert: String?, onAlertOpened: () -> U
     LaunchedEffect(openAlert) {
         val a = openAlert?.let { repo.alerts.get(it) }
         if (openAlert != null) {
-            if (a != null) push(Dest.Event(a.eventId, a.id)) else push(Dest.Alerts)
+            if (a != null) {
+                repo.setEventSequence(repo.alerts.alerts.value.map { com.tactical.seccam.data.EventRef(it.eventId, it.id) })
+                push(Dest.Event(a.eventId, a.id))
+            } else push(Dest.Alerts)
             onAlertOpened()
         }
     }

@@ -261,6 +261,7 @@ function onMessage(m) {
       m.notificationIds.forEach((id) => state.alerts.delete(id));
       for (const [id, a] of state.alerts) if (gone.has(a.eventId)) state.alerts.delete(id);
       state.activity = state.activity.filter((e) => !gone.has(e.id));
+      eventSeq = eventSeq.filter((x) => !gone.has(x.eventId));
       state.deleted = gone;
       state.eventsVersion++;
       changed();
@@ -331,7 +332,7 @@ const snapshots = {
 setInterval(() => { if (state.signedIn && route().name === 'dash') state.cameras.filter((c) => c.status?.stream === 'online').forEach((c) => snapshots.refresh(c.id)); }, 15000);
 
 function toast(a) {
-  const el = h('div.toast', { onclick: () => { location.hash = `#/event/${a.eventId}?alert=${a.id}`; el.remove(); } },
+  const el = h('div.toast', { onclick: () => { openEvent(a.eventId, a.id, alertsSorted().map((x) => ({ eventId: x.eventId, alertId: x.id }))); el.remove(); } },
     a.imageUrl ? h('img', { src: a.imageUrl, alt: '' }) : null,
     h('div', { style: { flex: 1, minWidth: 0 } },
       chip(fmt.kind(a.kind), color.kind(a.kind), true),
@@ -341,6 +342,14 @@ function toast(a) {
   while ($toasts.children.length > 4) $toasts.lastChild.remove();
   setTimeout(() => el.remove(), 9000);
   document.title = `(${unreadCount()}) Apex Security Console`;
+}
+
+/** The list an event was opened from; event detail pages through it (swipe, arrows, buttons). */
+let eventSeq = [];
+function openEvent(eventId, alertId, list, replace = false) {
+  if (list) eventSeq = list;
+  const url = `#/event/${eventId}${alertId ? `?alert=${alertId}` : ''}`;
+  replace ? location.replace(url) : (location.hash = url);
 }
 
 /** Delete events (and their frames + notifications). Applies locally at once; the server broadcasts to other clients. */
@@ -566,7 +575,7 @@ function cameraCard(c, last) {
 }
 
 function activityRow(ev) {
-  return h('div.row-item', { '--c': color.kind(ev.kind), onclick: () => (location.hash = `#/event/${ev.id}`) },
+  return h('div.row-item', { '--c': color.kind(ev.kind), onclick: () => openEvent(ev.id, null, state.activity.map((e) => ({ eventId: e.id }))) },
     h('span.stripe'), eventImg(ev.imageUrl, 'thumb'),
     h('div.grow', {},
       h('div.data', { text: `${fmt.kind(ev.kind)} · ${ev.cameraName.toUpperCase()}` }),
@@ -590,7 +599,7 @@ function cameraView(id) {
       const list = await api.get(`/api/events?cameraId=${id}&limit=30`);
       events.replaceChildren(
         sectionHeader('Recent detections', h('span.data-sm', { text: `${list.length}` })),
-        list.length ? h('div.strip', {}, list.map((ev) => h('div.tile', { onclick: () => (location.hash = `#/event/${ev.id}`) },
+        list.length ? h('div.strip', {}, list.map((ev) => h('div.tile', { onclick: () => openEvent(ev.id, null, list.map((e) => ({ eventId: e.id }))) },
           h('div.frame', {}, eventImg(ev.imageUrl), h('div.tl', {}, chip(fmt.kind(ev.kind), color.kind(ev.kind), true))),
           h('div.data-sm', { text: `${fmt.clock(ev.createdAt)} · ${fmt.pct(ev.confidence)}`, style: { marginTop: '4px' } }))))
           : h('p.faint', { text: 'Nothing detected yet.' }));
@@ -717,7 +726,7 @@ function alertsView() {
         err ? h('div.err', { text: err }) : null,
         shown.length ? [...groups].map(([day, list]) => [
           sectionHeader(day, h('span.data-sm', { text: `${list.length}` })),
-          h('div.list', {}, list.map((a) => h('div.row-item' + (a.read ? '' : '.unread') + (selected.has(a.id) ? '.selected' : ''), { '--c': a.read ? 'var(--hairline-dim)' : 'var(--amber)', onclick: () => (selecting ? toggleSel(a.id) : (location.hash = `#/event/${a.eventId}?alert=${a.id}`)) },
+          h('div.list', {}, list.map((a) => h('div.row-item' + (a.read ? '' : '.unread') + (selected.has(a.id) ? '.selected' : ''), { '--c': a.read ? 'var(--hairline-dim)' : 'var(--amber)', onclick: () => (selecting ? toggleSel(a.id) : openEvent(a.eventId, a.id, shown.map((x) => ({ eventId: x.eventId, alertId: x.id })))) },
             selecting ? checkbox(selected.has(a.id), () => toggleSel(a.id)) : null,
             h('span.stripe'), eventImg(a.imageUrl, 'thumb'),
             h('div.grow', {},
@@ -734,6 +743,31 @@ function alertsView() {
 function eventView(eventId, alertId) {
   const el = h('div.fade-in');
   let ev = null, err = null, confirmDel = false;
+  const seq = () => (eventSeq.some((x) => x.eventId === eventId) ? eventSeq : [{ eventId, alertId }]);
+  const pos = () => seq().findIndex((x) => x.eventId === eventId);
+  const go = (delta) => {
+    const s = seq(), i = pos() + delta;
+    if (i < 0 || i >= s.length) return;
+    openEvent(s[i].eventId, s[i].alertId, null, true); // replace: Back still returns to the list
+  };
+  const onKey = (e) => {
+    if (e.target.closest?.('input, textarea')) return;
+    if (e.key === 'ArrowLeft') go(-1);
+    else if (e.key === 'ArrowRight') go(1);
+  };
+  document.addEventListener('keydown', onKey);
+  // Touch / pen swipe on the frame.
+  let sx = null, sy = null;
+  const swipe = {
+    onpointerdown: (e) => { sx = e.clientX; sy = e.clientY; },
+    onpointerup: (e) => {
+      if (sx === null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      sx = null;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1);
+    },
+    style: { touchAction: 'pan-y', userSelect: 'none' },
+  };
   if (alertId) markRead([alertId]);
   const update = () => {
     if (state.deleted?.has(eventId)) {
@@ -745,9 +779,16 @@ function eventView(eventId, alertId) {
     const kc = color.kind(kind);
     const camId = ev?.cameraId ?? a?.cameraId;
     el.replaceChildren(
-      topbar(`${fmt.kind(kind)} detected`, (ev?.cameraName ?? a?.cameraName ?? '').toUpperCase(), { back: alertId ? '#/alerts' : '#/' }),
+      topbar(`${fmt.kind(kind)} detected`, [(ev?.cameraName ?? a?.cameraName ?? '').toUpperCase(), seq().length > 1 ? `${pos() + 1} / ${seq().length}` : ''].filter(Boolean).join(' · '), {
+        back: alertId ? '#/alerts' : '#/',
+        actions: seq().length > 1 ? [
+          btn('‹ Prev', () => go(-1), { small: true, disabled: pos() <= 0 }),
+          h('span.data-sm', { text: `${pos() + 1}/${seq().length}` }),
+          btn('Next ›', () => go(1), { small: true, disabled: pos() >= seq().length - 1 }),
+        ] : [],
+      }),
       h('main', {}, h('div.two-col', { style: { marginTop: '14px' } },
-        h('div.hero-img', {}, (ev?.imageUrl ?? a?.imageUrl) ? h('img', { src: ev?.imageUrl ?? a?.imageUrl, alt: '' }) : h('div.center.label.faint', { text: 'NO FRAME' }), h('div.overlay-brackets.brackets', { '--br': kc, '--bl': '18px', '--bw': '2px', '--bi': '6px' })),
+        h('div.hero-img', swipe, (ev?.imageUrl ?? a?.imageUrl) ? h('img', { src: ev?.imageUrl ?? a?.imageUrl, alt: '' }) : h('div.center.label.faint', { text: 'NO FRAME' }), h('div.overlay-brackets.brackets', { '--br': kc, '--bl': '18px', '--bw': '2px', '--bi': '6px' })),
         h('div', {},
           h('div.glass.brackets', { '--br': kc, '--bl': '8px' },
             h('div.label', { text: '// TARGET', style: { color: kc, marginBottom: '8px' } }),
@@ -765,12 +806,18 @@ function eventView(eventId, alertId) {
           h('div', { style: { height: '10px' } }),
           btn(confirmDel ? 'Confirm delete event' : 'Delete event', async () => {
             if (!confirmDel) { confirmDel = true; return update(); }
-            try { await deleteEvents({ ids: [eventId] }); history.length > 1 ? history.back() : (location.hash = '#/'); } catch (e) { err = e.message; confirmDel = false; update(); }
+            const s = seq(), i = pos();
+            const next = s[i + 1] ?? s[i - 1];
+            try {
+              await deleteEvents({ ids: [eventId] });
+              if (next) openEvent(next.eventId, next.alertId, null, true);
+              else history.length > 1 ? history.back() : (location.hash = '#/');
+            } catch (e) { err = e.message; confirmDel = false; update(); }
           }, { variant: 'red', primary: confirmDel, block: true })))));
   };
   api.get(`/api/events/${eventId}`).then((e) => { ev = e; update(); }).catch((e) => { err = e.message; update(); });
   update();
-  return { el, update };
+  return { el, update, destroy: () => document.removeEventListener('keydown', onKey) };
 }
 
 function setupView() {
@@ -1020,7 +1067,7 @@ function eventsView() {
         }) : null,
         allMatching && !done ? h('div.data-sm.c-amber', { text: 'Includes events not loaded yet: everything matching these filters will be deleted.', style: { marginBottom: '8px' } }) : null,
         err ? h('div.err', { text: err }) : null,
-        items.length ? h('div.list', {}, items.map((ev) => h('div.row-item' + (selecting && isSel(ev.id) ? '.selected' : ''), { '--c': color.kind(ev.kind), onclick: () => (selecting ? toggleSel(ev.id) : (location.hash = `#/event/${ev.id}`)) },
+        items.length ? h('div.list', {}, items.map((ev) => h('div.row-item' + (selecting && isSel(ev.id) ? '.selected' : ''), { '--c': color.kind(ev.kind), onclick: () => (selecting ? toggleSel(ev.id) : openEvent(ev.id, null, items.map((e) => ({ eventId: e.id })))) },
           selecting ? checkbox(isSel(ev.id), () => toggleSel(ev.id)) : null,
           h('span.stripe'), eventImg(ev.imageUrl, 'thumb'),
           h('div.grow', {},
