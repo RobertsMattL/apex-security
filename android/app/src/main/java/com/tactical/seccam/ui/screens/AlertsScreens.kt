@@ -47,6 +47,9 @@ import com.tactical.seccam.data.DetectionEventItem
 import com.tactical.seccam.data.EventRef
 import com.tactical.seccam.data.Repository
 import com.tactical.seccam.ui.components.Chip
+import com.tactical.seccam.ui.components.ClipPlayer
+import com.tactical.seccam.ui.components.Segmented
+import com.tactical.seccam.ui.components.StatusPip
 import com.tactical.seccam.ui.components.EmptyState
 import com.tactical.seccam.ui.components.EventImage
 import com.tactical.seccam.ui.components.Fmt
@@ -208,26 +211,51 @@ fun EventDetailScreen(repo: Repository, eventId: String, alertId: String?, onBac
                 if (items.size > 1) Text("‹ SWIPE ›", style = Tac.DataSmall.copy(color = Tac.TextFaint))
             }
             HorizontalPager(pager, key = { items[it].eventId }, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize()) { page ->
-                EventPage(repo, items[page], cache, onLive, onDeleted = { if (items.size <= 1) deletedSingle = true })
+                EventPage(repo, items[page], cache, active = page == pager.settledPage, onLive, onDeleted = { if (items.size <= 1) deletedSingle = true })
             }
         }
     }
 }
 
 @Composable
-private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String, DetectionEventItem>, onLive: (String) -> Unit, onDeleted: () -> Unit) {
+private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String, DetectionEventItem>, active: Boolean, onLive: (String) -> Unit, onDeleted: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var showFrame by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val alert = ref.alertId?.let { repo.alerts.get(it) }
+    val clipUpdate by repo.clipUpdate.collectAsStateWithLifecycle()
     LaunchedEffect(ref.eventId) {
         if (cache[ref.eventId] == null) runCatching { repo.api.event(ref.eventId) }.onSuccess { cache[ref.eventId] = it }.onFailure { error = it.message }
     }
+    // The clip finished recording while we're looking: fetch the playable URL.
+    LaunchedEffect(clipUpdate) {
+        val (id, state) = clipUpdate ?: return@LaunchedEffect
+        if (id == ref.eventId && cache[id]?.clipState != state) runCatching { repo.api.event(id) }.onSuccess { cache[id] = it }
+    }
     val ev = cache[ref.eventId]
     val c = Tac.kindColor(ev?.kind ?: alert?.kind ?: "")
+    val clipUrl = ev?.clipUrl
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(14.dp)) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp)) {
-            EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            if (clipUrl != null && !showFrame) {
+                ClipPlayer(ref.eventId, clipUrl, active = active, modifier = Modifier.fillMaxSize())
+            } else {
+                EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                val badge = when (ev?.clipState) { "recording" -> "REC · CLIP RECORDING"; "failed" -> "CLIP UNAVAILABLE"; else -> if (clipUrl != null) "DETECTION FRAME" else null }
+                if (badge != null) Row(
+                    Modifier.align(Alignment.TopStart).padding(10.dp).background(Tac.Void.copy(alpha = 0.72f), RoundedCornerShape(2.dp))
+                        .border(1.dp, if (ev?.clipState == "recording") Tac.Red.copy(alpha = 0.45f) else Tac.Hairline, RoundedCornerShape(2.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (ev?.clipState == "recording") { StatusPip(Tac.Red, pulse = true, size = 6.dp); Spacer(Modifier.width(6.dp)) }
+                    Text(badge, style = Tac.DataSmall.copy(color = if (ev?.clipState == "recording") Tac.Red else Tac.TextDim))
+                }
+            }
+        }
+        if (clipUrl != null) {
+            Spacer(Modifier.height(10.dp))
+            Segmented(listOf("clip" to "▶ CLIP ${Fmt.secs(ev.clipDurationSec)}", "frame" to "DETECTION FRAME"), if (showFrame) "frame" else "clip") { showFrame = it == "frame" }
         }
         Spacer(Modifier.height(14.dp))
         GlassPanel(Modifier.fillMaxWidth(), accent = c.copy(alpha = 0.6f)) {
@@ -237,6 +265,11 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
                 KeyValue("Class", "${Fmt.kind(ev.kind)} (${ev.label})", c)
                 KeyValue("Confidence", Fmt.pct(ev.confidence))
                 KeyValue("Track", ev.trackId?.let { "#$it" } ?: "—")
+                KeyValue(
+                    "Clip",
+                    when (ev.clipState) { "ready" -> Fmt.secs(ev.clipDurationSec); "recording" -> "RECORDING…"; "failed" -> "FAILED"; else -> "NONE" },
+                    if (ev.clipState == "recording") Tac.Red else Tac.Text,
+                )
                 KeyValue("Camera", ev.cameraName)
                 KeyValue("Time", Fmt.stamp(ev.createdAt))
                 KeyValue("Age", Fmt.ago(ev.createdAt))

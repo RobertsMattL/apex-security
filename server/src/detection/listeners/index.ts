@@ -4,7 +4,7 @@ export const personListener: DetectionListener = {
   kind: 'person',
   label: 'Human',
   matches: (cls) => cls === 'person',
-  defaults: { enabled: true, notify: true, minConfidence: 0.55, cooldownSec: 60 },
+  defaults: { enabled: true, notify: true, minConfidence: 0.55, cooldownSec: 10 },
 };
 
 // COCO animal classes.
@@ -14,7 +14,7 @@ export const animalListener: DetectionListener = {
   kind: 'animal',
   label: 'Animal',
   matches: (cls) => ANIMALS.has(cls),
-  defaults: { enabled: false, notify: true, minConfidence: 0.5, cooldownSec: 120 },
+  defaults: { enabled: false, notify: true, minConfidence: 0.5, cooldownSec: 10 },
 };
 
 /**

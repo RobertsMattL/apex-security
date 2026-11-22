@@ -150,8 +150,8 @@ fun CameraDetailScreen(repo: Repository, cameraId: String, onBack: () -> Unit, o
                             onDone = { drafts.remove(l.kind)?.let { saveListeners(listOf(it)) } },
                         )
                         TacSlider(
-                            "Cooldown", l.cooldownSec.toFloat(), cooldownText(l.cooldownSec), 0f..600f, enabled = l.enabled,
-                            onChange = { drafts[l.kind] = l.copy(cooldownSec = (it / 10).toInt() * 10) },
+                            "Clip / cooldown", l.cooldownSec.toFloat(), cooldownText(l.cooldownSec), 0f..120f, enabled = l.enabled,
+                            onChange = { drafts[l.kind] = l.copy(cooldownSec = (it / 5).toInt() * 5) },
                             onDone = { drafts.remove(l.kind)?.let { saveListeners(listOf(it)) } },
                         )
                     }

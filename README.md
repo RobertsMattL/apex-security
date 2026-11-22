@@ -8,7 +8,8 @@ RTSP camera ──> MediaMTX (tacticalRtsp's streaming layer, managed by the ser
                   ├──> detector/worker.py ─ tacticalRtsp yolo/: YOLO + BoT-SORT re-ID + overlay
                   │        │  JSON lines: detections, snapshots (JPEG with tactical overlay)
                   │        ▼
-                  │    Event Manager (de-dup per track, threshold, cooldown) ──> SQLite + data/events/*.jpg
+                  │    Event Manager (threshold, clip/cooldown, notify once per track) ──> SQLite + data/events/*.jpg
+                  │        │  ffmpeg stream-copies a clip from MediaMTX ──> data/events/*.mp4
                   │        ▼
                   │    Notification Service (per-device delivery, retries w/ backoff, receipts)
                   │        ▼
@@ -36,10 +37,11 @@ server/      Node 22 + TypeScript backend
   src/rtsp/TacticalRtspAdapter.ts     MediaMTX lifecycle, paths via API, reader auth hook
   src/cameras/CameraManager.ts        camera CRUD, encrypted credentials, ffprobe test, status
   src/detection/                      DetectionEngine, SidecarDetector, listener registry (person, animal)
-  src/events/EventManager.ts          per-track de-dup, thresholds, cooldowns, frame capture, persistence
+  src/events/EventManager.ts          thresholds, clip/cooldown windows, notify-once per track, frame capture
+  src/events/ClipRecorder.ts          per-event MP4 clip (ffmpeg stream copy from MediaMTX, no re-encode)
   src/notifications/                  NotificationService: delivery state machine + retries
   src/ws/Gateway.ts                   authenticated WebSocket, heartbeats, receipts
-  src/api/routes.ts                   REST API, signed image URLs, stream tokens
+  src/api/routes.ts                   REST API, signed image + clip URLs (clips support Range), stream tokens
   src/db/database.ts                  SQLite (node:sqlite) + migrations
   test/                               vitest: auth, de-dup/cooldown, delivery/retry/ack/read, restart survival
 detector/worker.py                    detection sidecar (one process per camera)
@@ -80,6 +82,18 @@ Then add those URLs as cameras in the app. The backyard clip has cats (enable an
 cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## Event clips and cooldown
+
+Each detection listener (per camera, per kind) has one **clip / cooldown** setting, 10 s by default (0–300 s through the API; the apps' sliders go to 120 s):
+
+- When an event fires, the server records that many seconds of video from the camera's MediaMTX path. ffmpeg stream-copies it into an MP4 with `+faststart`, with no re-encode.
+- Until the clip ends, no new event of that kind fires on that camera. Then detection resumes.
+- If the same tracked object is still in view, it fires a follow-up event and clip. A long visit is covered back to back, but only the first event for a tracked object sends a notification.
+- The clip's state is `recording`, then `ready` or `failed`. The server broadcasts `event.clip` over the WebSocket when the clip finishes.
+- Clips are served from `GET /api/clips/:eventId` through signed, expiring URLs (`clipUrl` on the event), with HTTP Range support.
+- Deleting an event deletes its clip, and stops the recording if it is still running.
+- Setting 0 records no clip and disables the cooldown.
 
 ## Notification reliability
 

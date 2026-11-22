@@ -36,6 +36,8 @@ object Fmt {
     }
 
     fun pct(conf: Double) = "${(conf * 100).toInt()}%"
+    fun secs(s: Double?) = if (s == null) "—" else "${Math.round(s)}s"
+    fun mmss(ms: Long) = "%d:%02d".format(ms / 60000, (ms / 1000) % 60)
 
     fun kind(kind: String) = when (kind) {
         "person" -> "HUMAN"

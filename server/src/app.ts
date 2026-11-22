@@ -11,6 +11,7 @@ import { DetectionEngine, type DetectorFactory } from './detection/DetectionEngi
 import { ListenerRegistry } from './detection/listeners/index.js';
 import { SidecarDetector } from './detection/SidecarDetector.js';
 import { EventManager } from './events/EventManager.js';
+import { FfmpegClipRecorder, type ClipRecorder } from './events/ClipRecorder.js';
 import { NotificationService, type RetryPolicy } from './notifications/NotificationService.js';
 import { TacticalRtspAdapter } from './rtsp/TacticalRtspAdapter.js';
 import { Bus } from './util/bus.js';
@@ -29,6 +30,8 @@ export interface AppOptions {
   retryPolicy?: RetryPolicy;
   heartbeatMs?: number;
   notificationTickMs?: number;
+  /** Event clip recorder; defaults to ffmpeg when streaming is on, none otherwise. */
+  clipRecorder?: ClipRecorder | null;
 }
 
 /** Wires the modules together. Every module talks to the others through the interfaces it was given. */
@@ -42,7 +45,9 @@ export async function createApp(config: Config, opts: AppOptions = {}) {
   const rtsp = new TacticalRtspAdapter(config, secrets, (cameraId, token) => auth.verifyStream(token, cameraId));
   const cameras = new CameraManager(db, secrets, rtsp, registry, bus, config);
   const notifications = new NotificationService(db, cameras, registry, bus, (eventId) => signedImageUrl(secrets, eventId), opts.retryPolicy);
-  const events = new EventManager(db, cameras, registry, bus, config.dataDir, notifications);
+  const clips =
+    opts.clipRecorder !== undefined ? opts.clipRecorder : opts.streaming === false ? null : new FfmpegClipRecorder(config.ffmpeg, (id) => rtsp.internalReadUrl(id), config.ffprobe);
+  const events = new EventManager(db, cameras, registry, bus, config.dataDir, notifications, clips);
   const factory: DetectorFactory =
     opts.detectorFactory ?? ((cameraId, minConf) => new SidecarDetector(cameraId, rtsp.internalReadUrl(cameraId), config, minConf));
   const detection = new DetectionEngine(cameras, bus, factory, events);
@@ -77,6 +82,7 @@ export async function createApp(config: Config, opts: AppOptions = {}) {
     gateway.close();
     live.close();
     await detection.stop();
+    clips?.stopAll();
     await app.close();
     if (opts.streaming !== false) await rtsp.stop();
     db.close();

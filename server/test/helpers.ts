@@ -6,6 +6,26 @@ import WebSocket from 'ws';
 import { createApp, type App } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import type { DetectionFrame, Detector, DetectorState } from '../src/detection/types.js';
+import type { ClipRecorder } from '../src/events/ClipRecorder.js';
+
+/** Writes a fake MP4 after `ms` instead of recording; records what was asked for. */
+export class FakeClipRecorder implements ClipRecorder {
+  calls: Array<{ eventId: string; seconds: number; path: string }> = [];
+  cancelled: string[] = [];
+  constructor(public ms = 30, public fail = false) {}
+  async record(eventId: string, _cameraId: string, path: string, seconds: number) {
+    this.calls.push({ eventId, seconds, path });
+    await new Promise((r) => setTimeout(r, this.ms));
+    if (this.fail || this.cancelled.includes(eventId)) return null;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, Buffer.alloc(4096, 7));
+    return seconds;
+  }
+  cancel(ids: string[]) {
+    this.cancelled.push(...ids);
+  }
+  stopAll() {}
+}
 
 export function tempDir() {
   return mkdtempSync(join(tmpdir(), 'seccam-test-'));
@@ -32,10 +52,11 @@ export class FakeDetector extends EventEmitter implements Detector {
   }
 }
 
-export async function startApp(dataDir = tempDir(), opts: { baseMs?: number } = {}) {
+export async function startApp(dataDir = tempDir(), opts: { baseMs?: number; clips?: ClipRecorder } = {}) {
   const detectors = new Map<string, FakeDetector>();
   const app = await createApp(loadConfig({ dataDir, port: 0, host: '127.0.0.1', mediamtx: { apiPort: 1 } as never }), {
     streaming: false,
+    clipRecorder: opts.clips ?? new FakeClipRecorder(),
     detectorFactory: (id) => {
       const d = new FakeDetector(id);
       detectors.set(id, d);
@@ -47,7 +68,7 @@ export async function startApp(dataDir = tempDir(), opts: { baseMs?: number } = 
   });
   await app.start();
   const port = (app.app.server.address() as { port: number }).port;
-  return { app, port, base: `http://127.0.0.1:${port}`, dataDir, detectors };
+  return { app, port, base: `http://127.0.0.1:${port}`, dataDir, detectors, clips: (opts.clips ?? null) as ClipRecorder | null };
 }
 
 export async function api<T = any>(base: string, path: string, init: { method?: string; token?: string; body?: unknown } = {}): Promise<{ status: number; body: T }> {

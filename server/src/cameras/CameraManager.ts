@@ -193,7 +193,7 @@ export class CameraManager {
         if (!cur) throw new ValidationError(`unknown detection kind: ${p.kind}`);
         const next = { ...cur, ...p };
         if (!(next.minConfidence >= 0.05 && next.minConfidence <= 0.99)) throw new ValidationError('minConfidence must be between 0.05 and 0.99');
-        if (!(next.cooldownSec >= 0 && next.cooldownSec <= 86400)) throw new ValidationError('cooldownSec must be between 0 and 86400');
+        if (!(next.cooldownSec >= 0 && next.cooldownSec <= 300)) throw new ValidationError('cooldownSec (clip length) must be between 0 and 300 seconds');
         this.db
           .prepare(`INSERT INTO detection_listeners (camera_id, kind, enabled, notify, min_confidence, cooldown_sec) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT (camera_id, kind) DO UPDATE SET enabled = excluded.enabled, notify = excluded.notify,

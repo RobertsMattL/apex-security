@@ -131,7 +131,7 @@ fun CameraSetupScreen(repo: Repository, onBack: () -> Unit, onCreated: (String) 
                 GlassPanel(Modifier.fillMaxWidth()) {
                     ToggleRow("Human detection", "Alert when a person is detected", person, { person = it }, accent = Tac.Red)
                     ToggleRow("Animal detection", "Dogs, cats, birds, wildlife", animal, { animal = it }, accent = Tac.Amber)
-                    Text("Thresholds and cooldowns can be tuned per camera after deployment.", style = Tac.DataSmall.copy(color = Tac.TextFaint))
+                    Text("Each event records a 10s clip, then detection resumes. Clip length, thresholds and alerts can be tuned per camera after deployment.", style = Tac.DataSmall.copy(color = Tac.TextFaint))
                 }
 
                 AnimatedVisibility(error != null) { Text(error ?: "", style = Tac.DataSmall.copy(color = Tac.Red), modifier = Modifier.padding(top = 10.dp)) }

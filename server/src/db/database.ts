@@ -43,7 +43,7 @@ const MIGRATIONS: string[] = [
     enabled INTEGER NOT NULL DEFAULT 0,
     notify INTEGER NOT NULL DEFAULT 1,
     min_confidence REAL NOT NULL DEFAULT 0.5,
-    cooldown_sec INTEGER NOT NULL DEFAULT 60,
+    cooldown_sec INTEGER NOT NULL DEFAULT 60,  -- also the event clip length (see migration 2)
     PRIMARY KEY (camera_id, kind)
   );
   CREATE TABLE events (
@@ -85,6 +85,14 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (notification_id, device_id)
   );
   CREATE INDEX deliveries_due ON deliveries(device_id, state, next_attempt_at);
+  `,
+  // Event video clips. The cooldown now doubles as the clip length, so the old long
+  // defaults (60 s / 120 s) become 10 s.
+  `
+  ALTER TABLE events ADD COLUMN clip_state TEXT;
+  ALTER TABLE events ADD COLUMN clip_path TEXT;
+  ALTER TABLE events ADD COLUMN clip_duration REAL;
+  UPDATE detection_listeners SET cooldown_sec = 10;
   `,
 ];
 

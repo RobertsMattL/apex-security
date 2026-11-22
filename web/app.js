@@ -44,6 +44,7 @@ const fmt = {
   },
   pct: (c) => `${Math.round(c * 100)}%`,
   kind: (k) => (k === 'person' ? 'HUMAN' : k === 'animal' ? 'ANIMAL' : String(k).toUpperCase()),
+  secs: (s) => (s == null ? '—' : `${Math.round(s)}s`),
   cooldown: (s) => (s === 0 ? 'OFF' : s < 60 ? `${s}s` : s % 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s / 60}m`),
 };
 const color = {
@@ -267,6 +268,10 @@ function onMessage(m) {
       changed();
       break;
     }
+    case 'event.clip':
+      state.clip = m; // event detail picks this up and fetches the playable URL
+      changed();
+      break;
     case 'event':
       api.get(`/api/events/${m.event.id}`).then((ev) => {
         state.activity = [ev, ...state.activity.filter((x) => x.id !== ev.id)].slice(0, 50);
@@ -625,7 +630,7 @@ function cameraView(id) {
         if (commit) { drafts.delete(l.kind); saveListeners([next]); } else drafts.set(l.kind, next);
         return fmt.pct(v / 100);
       }),
-      slider('Cooldown', l.cooldownSec, fmt.cooldown(l.cooldownSec), 0, 600, 10, (v, commit) => {
+      slider('Clip / cooldown', l.cooldownSec, fmt.cooldown(l.cooldownSec), 0, 120, 5, (v, commit) => {
         const next = { ...l, cooldownSec: v };
         if (commit) { drafts.delete(l.kind); saveListeners([next]); } else drafts.set(l.kind, next);
         return fmt.cooldown(v);
@@ -742,7 +747,11 @@ function alertsView() {
 
 function eventView(eventId, alertId) {
   const el = h('div.fade-in');
-  let ev = null, err = null, confirmDel = false;
+  let ev = null, err = null, confirmDel = false, showFrame = false;
+  // The hero is built once and only rebuilt when what it shows changes, so app-wide
+  // re-renders (status ticks, new alerts) don't restart the clip.
+  const hero = h('div.hero-img');
+  let heroKey = '';
   const seq = () => (eventSeq.some((x) => x.eventId === eventId) ? eventSeq : [{ eventId, alertId }]);
   const pos = () => seq().findIndex((x) => x.eventId === eventId);
   const go = (delta) => {
@@ -769,7 +778,24 @@ function eventView(eventId, alertId) {
     style: { touchAction: 'pan-y', userSelect: 'none' },
   };
   if (alertId) markRead([alertId]);
+  const load = () => api.get(`/api/events/${eventId}`).then((e) => { ev = e; update(); }).catch((e) => { err = e.message; update(); });
+  const renderHero = (img, kc) => {
+    const clip = !showFrame && ev?.clipUrl;
+    const key = `${clip ? ev.clipUrl.split('?')[0] : img ?? ''}|${ev?.clipState}|${showFrame}`;
+    if (key === heroKey) return;
+    heroKey = key;
+    const media = clip
+      ? h('video', { src: ev.clipUrl, poster: img ?? '', controls: true, autoplay: true, muted: true, loop: true, playsInline: true, preload: 'auto' })
+      : img ? h('img', { src: img, alt: '' }) : h('div.center.label.faint', { text: 'NO FRAME' });
+    const badge = ev?.clipState === 'recording' ? h('div.clip-badge.rec', {}, h('span.pip.pulse', { style: { color: 'var(--red)' } }), 'REC · CLIP RECORDING')
+      : ev?.clipState === 'failed' ? h('div.clip-badge', { text: 'CLIP UNAVAILABLE' })
+      : clip ? null : ev?.clipUrl ? h('div.clip-badge', { text: 'DETECTION FRAME' }) : null;
+    hero.replaceChildren(media, h('div.overlay-brackets.brackets', { '--br': kc, '--bl': '18px', '--bw': '2px', '--bi': '6px' }), badge ?? '');
+    if (clip) media.muted = true; // property, not just the attribute, or autoplay is blocked
+  };
+  Object.entries(swipe).forEach(([k, v]) => (k === 'style' ? Object.assign(hero.style, v) : (hero[k] = v)));
   const update = () => {
+    if (state.clip?.id === eventId && ev && ev.clipState !== state.clip.clipState) { ev = { ...ev, clipState: state.clip.clipState }; load(); }
     if (state.deleted?.has(eventId)) {
       el.replaceChildren(topbar('Event deleted', '', { back: '#/' }), h('main', {}, empty('Deleted', 'This event was deleted.')));
       return;
@@ -788,7 +814,10 @@ function eventView(eventId, alertId) {
         ] : [],
       }),
       h('main', {}, h('div.two-col', { style: { marginTop: '14px' } },
-        h('div.hero-img', swipe, (ev?.imageUrl ?? a?.imageUrl) ? h('img', { src: ev?.imageUrl ?? a?.imageUrl, alt: '' }) : h('div.center.label.faint', { text: 'NO FRAME' }), h('div.overlay-brackets.brackets', { '--br': kc, '--bl': '18px', '--bw': '2px', '--bi': '6px' })),
+        h('div', {}, (renderHero(ev?.imageUrl ?? a?.imageUrl, kc), hero),
+          ev?.clipUrl ? h('div.segmented', { style: { marginTop: '10px' } },
+            h('button', { 'aria-pressed': String(!showFrame), onclick: () => { showFrame = false; update(); } }, `▶ CLIP ${fmt.secs(ev.clipDurationSec)}`),
+            h('button', { 'aria-pressed': String(showFrame), onclick: () => { showFrame = true; update(); } }, 'DETECTION FRAME')) : null),
         h('div', {},
           h('div.glass.brackets', { '--br': kc, '--bl': '8px' },
             h('div.label', { text: '// TARGET', style: { color: kc, marginBottom: '8px' } }),
@@ -796,6 +825,7 @@ function eventView(eventId, alertId) {
               ['Class', `${fmt.kind(ev.kind)} (${ev.label})`, kc],
               ['Confidence', fmt.pct(ev.confidence)],
               ['Track', ev.trackId != null ? `#${ev.trackId}` : '—'],
+              ['Clip', ev.clipState === 'ready' ? fmt.secs(ev.clipDurationSec) : ev.clipState === 'recording' ? 'RECORDING…' : ev.clipState === 'failed' ? 'FAILED' : 'NONE', ev.clipState === 'recording' ? 'var(--red)' : null],
               ['Camera', ev.cameraName],
               ['Time', fmt.stamp(ev.createdAt)],
               ['Age', fmt.ago(ev.createdAt)],
@@ -815,7 +845,7 @@ function eventView(eventId, alertId) {
             } catch (e) { err = e.message; confirmDel = false; update(); }
           }, { variant: 'red', primary: confirmDel, block: true })))));
   };
-  api.get(`/api/events/${eventId}`).then((e) => { ev = e; update(); }).catch((e) => { err = e.message; update(); });
+  load();
   update();
   return { el, update, destroy: () => document.removeEventListener('keydown', onKey) };
 }
@@ -888,7 +918,7 @@ function setupView() {
       sectionHeader('04 · Identify'),
       h('div.glass', {}, input('Camera name', 'name', { placeholder: 'Driveway', maxlength: '64' }, refresh)),
       sectionHeader('05 · Detection listeners'),
-      h('div.glass', {}, personRow, animalRow, h('div.data-sm.faint', { text: 'Thresholds and cooldowns can be tuned per camera after deployment.' })),
+      h('div.glass', {}, personRow, animalRow, h('div.data-sm.faint', { text: 'Each event records a 10s clip, then detection resumes. Clip length, thresholds and alerts can be tuned per camera after deployment.' })),
       errEl, h('div', { style: { height: '16px' } }), deploy));
   refresh();
   return { el };

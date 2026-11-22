@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { AuthError, type AuthService, type Principal } from '../auth/AuthService.js';
 import type { CameraManager } from '../cameras/CameraManager.js';
 import type { Config } from '../config.js';
-import type { EventManager } from '../events/EventManager.js';
+import type { DetectionEvent, EventManager } from '../events/EventManager.js';
 import type { NotificationService } from '../notifications/NotificationService.js';
 import type { TacticalRtspAdapter } from '../rtsp/TacticalRtspAdapter.js';
 import type { Secrets } from '../util/secrets.js';
@@ -34,6 +34,23 @@ export function signedImageUrl(secrets: Secrets, eventId: string, now = Date.now
   return `/api/images/${eventId}?exp=${exp}&sig=${secrets.sign(`img:${eventId}:${exp}`)}`;
 }
 
+export function signedClipUrl(secrets: Secrets, eventId: string, now = Date.now()) {
+  const exp = Math.floor(now / 1000) + IMAGE_URL_TTL_SEC;
+  return `/api/clips/${eventId}?exp=${exp}&sig=${secrets.sign(`clip:${eventId}:${exp}`)}`;
+}
+
+/** Client view of an event: file paths replaced by signed URLs. */
+function eventDto(d: ApiDeps, e: DetectionEvent) {
+  return {
+    ...e,
+    imagePath: undefined,
+    clipPath: undefined,
+    imageUrl: e.imagePath ? signedImageUrl(d.secrets, e.id) : null,
+    clipUrl: e.clipState === 'ready' && e.clipPath ? signedClipUrl(d.secrets, e.id) : null,
+    cameraName: d.cameras.name(e.cameraId),
+  };
+}
+
 const cameraBody = z.object({
   name: z.string().min(1).max(64),
   rtspUrl: z.string().min(1).max(2048),
@@ -52,7 +69,7 @@ const settingsBody = z.object({
         enabled: z.boolean().optional(),
         notify: z.boolean().optional(),
         minConfidence: z.number().min(0.05).max(0.99).optional(),
-        cooldownSec: z.number().int().min(0).max(86400).optional(),
+        cooldownSec: z.number().int().min(0).max(300).optional(), // clip length = cooldown
       }),
     )
     .optional(),
@@ -121,6 +138,29 @@ export function registerRoutes(app: FastifyInstance, d: ApiDeps) {
     if (!ev?.imagePath || !existsSync(ev.imagePath)) return reply.code(404).send({ error: 'image not found' });
     reply.header('Cache-Control', 'private, max-age=86400, immutable').type('image/jpeg');
     return reply.send(createReadStream(ev.imagePath));
+  });
+
+  // Event clips: signed URL or bearer token. Range requests let players seek and let
+  // Safari / ExoPlayer stream the MP4 progressively.
+  app.get('/api/clips/:eventId', async (req, reply) => {
+    const { eventId } = req.params as { eventId: string };
+    const q = req.query as { exp?: string; sig?: string };
+    const signed = q.exp && q.sig && Number(q.exp) * 1000 > Date.now() && d.secrets.verify(`clip:${eventId}:${q.exp}`, q.sig);
+    if (!signed) await requireAuth(req);
+    const ev = d.events.get(eventId);
+    if (ev?.clipState !== 'ready' || !ev.clipPath || !existsSync(ev.clipPath)) return reply.code(404).send({ error: 'clip not found' });
+    const size = statSync(ev.clipPath).size;
+    reply.header('Accept-Ranges', 'bytes').header('Cache-Control', 'private, max-age=86400, immutable').type('video/mp4');
+    const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '');
+    if (m && (m[1] || m[2])) {
+      let start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+      let end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+      if (start >= size || start > end) return reply.code(416).header('Content-Range', `bytes */${size}`).send();
+      reply.code(206).header('Content-Range', `bytes ${start}-${end}/${size}`).header('Content-Length', end - start + 1);
+      return reply.send(createReadStream(ev.clipPath, { start, end }));
+    }
+    reply.header('Content-Length', size);
+    return reply.send(createReadStream(ev.clipPath));
   });
 
   // ---- authenticated -------------------------------------------------------
@@ -201,12 +241,12 @@ export function registerRoutes(app: FastifyInstance, d: ApiDeps) {
       const q = z
         .object({ cameraId: z.string().optional(), kind: z.string().optional(), before: z.coerce.number().optional(), limit: z.coerce.number().optional() })
         .parse(req.query);
-      return d.events.list(q).map((e) => ({ ...e, imagePath: undefined, imageUrl: e.imagePath ? signedImageUrl(d.secrets, e.id) : null, cameraName: d.cameras.name(e.cameraId) }));
+      return d.events.list(q).map((e) => eventDto(d, e));
     });
     r.get('/api/events/:id', async (req, reply) => {
       const e = d.events.get((req.params as { id: string }).id);
       if (!e) return reply.code(404).send({ error: 'event not found' });
-      return { ...e, imagePath: undefined, imageUrl: e.imagePath ? signedImageUrl(d.secrets, e.id) : null, cameraName: d.cameras.name(e.cameraId) };
+      return eventDto(d, e);
     });
     // Delete events (and their frames + notifications): by id, or everything matching a filter.
     r.delete('/api/events/:id', async (req, reply) => {

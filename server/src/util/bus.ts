@@ -12,6 +12,7 @@ export interface BusEvents {
   'notification.read': [notificationId: string, userId: string, readAt: number];
   'event.created': [event: { id: string; cameraId: string; kind: string }];
   'notification.created': [n: NotificationDto];
+  'event.clip': [e: { id: string; cameraId: string; clipState: 'ready' | 'failed'; clipDurationSec: number | null }];
   'events.deleted': [eventIds: string[], notificationIds: string[]];
 }
 

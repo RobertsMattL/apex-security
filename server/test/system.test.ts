@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { backoffMs, DEFAULT_RETRY } from '../src/notifications/NotificationService.js';
-import { api, personFrame, setupAndLogin, sleep, startApp, TestClient } from './helpers.js';
+import { api, FakeClipRecorder, personFrame, setupAndLogin, sleep, startApp, TestClient } from './helpers.js';
 
 const stops: Array<() => Promise<void>> = [];
 afterEach(async () => {
   while (stops.length) await stops.pop()!().catch(() => {});
 });
 
-async function boot(dataDir?: string, opts?: { baseMs?: number }) {
+async function boot(dataDir?: string, opts?: { baseMs?: number; clips?: FakeClipRecorder }) {
   const s = await startApp(dataDir, opts);
   stops.push(() => s.app.stop());
   return s;
@@ -58,11 +58,12 @@ describe('auth and camera credentials', () => {
 });
 
 describe('detection events', () => {
-  it('fires once per tracked object, honours threshold, cooldown and disabled listeners', async () => {
+  it('cooldown = clip length: one event per window, follow-ups for objects still in view notify once', async () => {
     const s = await boot();
     const t = await setupAndLogin(s.base);
     const { camera, detector } = await addCamera(s, t.accessToken);
     await api(s.base, `/api/cameras/${camera.id}/settings`, { method: 'PUT', token: t.accessToken, body: { listeners: [{ kind: 'person', cooldownSec: 1, minConfidence: 0.6 }] } });
+    const notes = () => s.app.db.prepare('SELECT COUNT(*) AS c FROM notifications').get() as { c: number };
 
     detector.feed(personFrame(1, 7, 0.5)); // below threshold
     await sleep(30);
@@ -71,20 +72,23 @@ describe('detection events', () => {
     for (let i = 2; i < 10; i++) detector.feed(personFrame(i, 7, 0.9)); // same object, many frames
     await sleep(50);
     expect(s.app.events.list({}).length).toBe(1);
+    expect(notes().c).toBe(1);
 
-    detector.feed(personFrame(10, 8, 0.9)); // new object inside the cooldown
+    detector.feed(personFrame(10, 8, 0.9)); // new object inside the cooldown: detection paused
     await sleep(30);
     expect(s.app.events.list({}).length).toBe(1);
 
     await sleep(1050);
-    detector.feed(personFrame(11, 7, 0.9)); // original object still in view after cooldown: no repeat
-    detector.feed(personFrame(12, 8, 0.9)); // suppressed during cooldown: no late event either
-    await sleep(30);
-    expect(s.app.events.list({}).length).toBe(1);
-
-    detector.feed(personFrame(13, 9, 0.9)); // genuinely new object after cooldown
+    detector.feed(personFrame(11, 7, 0.9)); // original object still in view after cooldown: follow-up clip, no notification
     await sleep(30);
     expect(s.app.events.list({}).length).toBe(2);
+    expect(notes().c).toBe(1);
+
+    await sleep(1050);
+    detector.feed(personFrame(12, 8, 0.9)); // object first seen during the cooldown: new, so it notifies
+    await sleep(30);
+    expect(s.app.events.list({}).length).toBe(3);
+    expect(notes().c).toBe(2);
 
     detector.feed(personFrame(14, 20, 0.95, 'dog')); // animal listener is off by default
     await sleep(30);
@@ -93,6 +97,79 @@ describe('detection events', () => {
     const ev = s.app.events.list({})[0];
     expect(ev.imagePath).toMatch(/\.jpg$/);
     expect(detector.snaps).toContain(ev.id);
+  });
+
+  it('records a clip as long as the cooldown and serves it over signed URLs with ranges', async () => {
+    const clips = new FakeClipRecorder(40);
+    const s = await boot(undefined, { clips });
+    const t = await setupAndLogin(s.base);
+    const { camera, detector } = await addCamera(s, t.accessToken);
+    await api(s.base, `/api/cameras/${camera.id}/settings`, { method: 'PUT', token: t.accessToken, body: { listeners: [{ kind: 'person', cooldownSec: 7 }] } });
+    const client = await TestClient.connect(s.base, t.accessToken);
+
+    detector.feed(personFrame(1, 1));
+    await sleep(15);
+    expect(clips.calls.map((c) => c.seconds)).toEqual([7]);
+    const id = clips.calls[0].eventId;
+    const pending = (await api(s.base, `/api/events/${id}`, { token: t.accessToken })).body;
+    expect(pending.clipState).toBe('recording');
+    expect(pending.clipUrl).toBeNull();
+    expect(pending.clipPath).toBeUndefined();
+
+    const msg = await client.next((m) => m.t === 'event.clip');
+    expect(msg).toMatchObject({ id, clipState: 'ready', clipDurationSec: 7 });
+    const ev = (await api(s.base, `/api/events/${id}`, { token: t.accessToken })).body;
+    expect(ev.clipUrl).toMatch(/^\/api\/clips\//);
+
+    const full = await fetch(s.base + ev.clipUrl);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('content-type')).toBe('video/mp4');
+    expect((await full.arrayBuffer()).byteLength).toBe(4096);
+    const part = await fetch(s.base + ev.clipUrl, { headers: { range: 'bytes=100-199' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe('bytes 100-199/4096');
+    expect((await part.arrayBuffer()).byteLength).toBe(100);
+    expect((await fetch(`${s.base}/api/clips/${id}`)).status).toBe(401);
+    expect((await fetch(s.base + ev.clipUrl.replace(/sig=./, 'sig=x'))).status).toBe(401);
+
+    // Deleting removes the clip file too.
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(clips.calls[0].path)).toBe(true);
+    await api(s.base, `/api/events/${id}`, { method: 'DELETE', token: t.accessToken });
+    expect(existsSync(clips.calls[0].path)).toBe(false);
+    client.close();
+  });
+
+  it('cancels a clip whose event is deleted while recording, and marks failed clips', async () => {
+    const clips = new FakeClipRecorder(150);
+    const s = await boot(undefined, { clips });
+    const t = await setupAndLogin(s.base);
+    const { camera, detector } = await addCamera(s, t.accessToken);
+    await api(s.base, `/api/cameras/${camera.id}/settings`, { method: 'PUT', token: t.accessToken, body: { listeners: [{ kind: 'person', cooldownSec: 5 }] } });
+    detector.feed(personFrame(1, 1));
+    await sleep(20);
+    const id = clips.calls[0].eventId;
+    await api(s.base, `/api/events/${id}`, { method: 'DELETE', token: t.accessToken });
+    expect(clips.cancelled).toContain(id);
+
+    clips.fail = true;
+    await sleep(5100);
+    detector.feed(personFrame(2, 2));
+    await sleep(250);
+    const ev = s.app.events.list({})[0];
+    expect(ev.clipState).toBe('failed');
+  }, 10000);
+
+  it('records no clip when the clip length is 0', async () => {
+    const clips = new FakeClipRecorder();
+    const s = await boot(undefined, { clips });
+    const t = await setupAndLogin(s.base);
+    const { camera, detector } = await addCamera(s, t.accessToken);
+    await api(s.base, `/api/cameras/${camera.id}/settings`, { method: 'PUT', token: t.accessToken, body: { listeners: [{ kind: 'person', cooldownSec: 0 }] } });
+    detector.feed(personFrame(1, 1));
+    await sleep(30);
+    expect(clips.calls.length).toBe(0);
+    expect(s.app.events.list({})[0].clipState).toBeNull();
   });
 
   it('records events without notifying when notifications are off for the camera', async () => {
