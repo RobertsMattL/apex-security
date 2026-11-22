@@ -1,0 +1,3 @@
+[submodule "vendor/tacticalRtsp"]
+	path = vendor/tacticalRtsp
+	url = https://github.com/RobertsMattL/tacticalRtsp.git

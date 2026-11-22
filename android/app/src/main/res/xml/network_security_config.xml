@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The server is self-hosted on the local network and may run without TLS.
+     Cleartext is allowed so plain http://<lan-ip>:8780 works; set TLS_CERT/TLS_KEY on
+     the server and use https:// for anything beyond a trusted LAN. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

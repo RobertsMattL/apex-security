@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.ApexSecurity" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF050709</item>
+        <item name="android:statusBarColor">#FF050709</item>
+        <item name="android:navigationBarColor">#FF050709</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
