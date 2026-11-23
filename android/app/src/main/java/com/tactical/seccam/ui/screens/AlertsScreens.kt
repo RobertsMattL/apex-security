@@ -40,7 +40,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tactical.seccam.data.AlertItem
 import com.tactical.seccam.data.DetectionEventItem
@@ -191,6 +193,7 @@ fun EventDetailScreen(repo: Repository, eventId: String, alertId: String?, onBac
     val pager = rememberPagerState(initialPage = items.indexOfFirst { it.eventId == opened.eventId }.coerceAtLeast(0)) { items.size }
     val cache = remember { mutableStateMapOf<String, DetectionEventItem>() }
     var deletedSingle by remember { mutableStateOf(false) }
+    val navScope = rememberCoroutineScope()
 
     LaunchedEffect(pager.settledPage, items) { items.getOrNull(pager.settledPage)?.alertId?.let { repo.markRead(listOf(it)) } }
     // The opened event was deleted and there is nothing left to show.
@@ -211,14 +214,19 @@ fun EventDetailScreen(repo: Repository, eventId: String, alertId: String?, onBac
                 if (items.size > 1) Text("‹ SWIPE ›", style = Tac.DataSmall.copy(color = Tac.TextFaint))
             }
             HorizontalPager(pager, key = { items[it].eventId }, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize()) { page ->
-                EventPage(repo, items[page], cache, active = page == pager.settledPage, onLive, onDeleted = { if (items.size <= 1) deletedSingle = true })
+                EventPage(
+                    repo, items[page], cache, active = page == pager.settledPage, onLive,
+                    onDeleted = { if (items.size <= 1) deletedSingle = true },
+                    onPrev = if (page > 0) ({ navScope.launch { pager.animateScrollToPage(page - 1) } }) else null,
+                    onNext = if (page < items.lastIndex) ({ navScope.launch { pager.animateScrollToPage(page + 1) } }) else null,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String, DetectionEventItem>, active: Boolean, onLive: (String) -> Unit, onDeleted: () -> Unit) {
+private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String, DetectionEventItem>, active: Boolean, onLive: (String) -> Unit, onDeleted: () -> Unit, onPrev: (() -> Unit)? = null, onNext: (() -> Unit)? = null) {
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var showFrame by remember { mutableStateOf(false) }
@@ -252,6 +260,8 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
                     Text(badge, style = Tac.DataSmall.copy(color = if (ev?.clipState == "recording") Tac.Red else Tac.TextDim))
                 }
             }
+            onPrev?.let { NavArrow("‹", Modifier.align(Alignment.CenterStart).padding(start = 8.dp), it) }
+            onNext?.let { NavArrow("›", Modifier.align(Alignment.CenterEnd).padding(end = 8.dp), it) }
         }
         if (clipUrl != null) {
             Spacer(Modifier.height(10.dp))
@@ -290,5 +300,21 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
             },
             accent = Tac.Red, primary = confirmDelete, modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/** Big previous / next event arrow over the event media. */
+@Composable
+private fun NavArrow(glyph: String, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier
+            .size(width = 48.dp, height = 84.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(Tac.Void.copy(alpha = 0.6f))
+            .border(1.dp, Tac.Cyan.copy(alpha = 0.45f), RoundedCornerShape(3.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(glyph, style = Tac.Title.copy(color = Tac.Cyan, fontSize = 52.sp, lineHeight = 52.sp, fontWeight = FontWeight.Light))
     }
 }
