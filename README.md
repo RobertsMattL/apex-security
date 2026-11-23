@@ -95,6 +95,12 @@ Each detection listener (per camera, per kind) has one **clip / cooldown** setti
 - Deleting an event deletes its clip, and stops the recording if it is still running.
 - Setting 0 records no clip and disables the cooldown.
 
+## Resource use
+
+- **Detector input:** ffmpeg decodes each camera on the GPU (VideoToolbox), drops frames down to `DETECTOR_FPS` (default 5) and scales them to `DETECTOR_WIDTH` (default 1280) on the GPU. Python only ever sees about five 720p frames a second. If GPU scaling fails for a stream, the worker falls back to CPU scaling. `DETECT_DECODER=opencv` switches back to tacticalRtsp's `LatestFrame`, which decodes every full-resolution frame on the CPU.
+- **Media and Spotlight:** event frames and clips live in `data/events.noindex/`, so macOS Spotlight doesn't index every file as it is written. An existing `data/events/` folder is moved there once, on startup.
+- **Clips** are stream copies, so they need no re-encode.
+
 ## Notification reliability
 
 - Every detection notification has a UUID and one `deliveries` row per registered device (`pending → delivered → received → read`, or `expired` after 7 days).

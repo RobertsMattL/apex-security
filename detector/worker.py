@@ -40,6 +40,10 @@ if not os.environ.get("SRC_URL"):
     sys.exit("SRC_URL is required")
 
 DETECT_FPS = float(os.environ.get("DETECT_FPS", "5"))
+DETECT_WIDTH = int(os.environ.get("DETECT_WIDTH", "1280"))  # frames are scaled to this before detection
+DECODER = os.environ.get("DETECT_DECODER", "ffmpeg")  # "opencv" = tacticalRtsp's LatestFrame
+FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
+FFPROBE = os.environ.get("FFPROBE", "ffprobe")
 
 
 def scaled_tracker_config():
@@ -123,8 +127,95 @@ def stdin_loop():
     os._exit(0)  # server went away
 
 
+class FfmpegFrames:
+    """Drop-in for stream.LatestFrame that does far less work.
+
+    OpenCV decodes every frame of the full-resolution stream on the CPU (a 1440p camera
+    at 20 fps), and we then discard all but DETECT_FPS of them. Here ffmpeg decodes in
+    hardware where available (VideoToolbox on macOS), drops frames down to DETECT_FPS
+    and scales to DETECT_WIDTH before anything reaches Python.
+    """
+
+    # Full GPU path (decode + scale on VideoToolbox, download only DETECT_FPS frames).
+    # Cleared if a stream yields nothing that way, falling back to GPU decode + CPU scale.
+    gpu_scale = sys.platform == "darwin"
+
+    def __init__(self, url):
+        import subprocess
+        self.url = url
+        w, h = self._probe(url)
+        self.w = min(DETECT_WIDTH, w)
+        self.h = int(round(h * self.w / w / 2)) * 2
+        args = [FFMPEG, "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp"]
+        if FfmpegFrames.gpu_scale:
+            args += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+            vf = f"fps={DETECT_FPS:g},scale_vt={self.w}:{self.h},hwdownload,format=nv12"
+        else:
+            if sys.platform == "darwin":
+                args += ["-hwaccel", "videotoolbox"]
+            vf = f"fps={DETECT_FPS:g},scale={self.w}:{self.h}:flags=fast_bilinear"
+        args += ["-i", url, "-an", "-sn", "-vf", vf,
+                 "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
+        self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        self.cond = threading.Condition()
+        self.frame = None
+        self.seq = 0
+        self.alive = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    @staticmethod
+    def _probe(url):
+        import subprocess
+        out = subprocess.run([FFPROBE, "-v", "error", "-rtsp_transport", "tcp", "-select_streams", "v:0",
+                              "-show_entries", "stream=width,height", "-of", "csv=p=0", url],
+                             capture_output=True, text=True, timeout=15).stdout.strip().splitlines()
+        if not out or "," not in out[0]:
+            raise RuntimeError("cannot open source (probe failed)")
+        w, h = (int(x) for x in out[0].split(",")[:2])
+        return w, h
+
+    def _run(self):
+        size = self.w * self.h * 3
+        buf = bytearray(size)
+        view = memoryview(buf)
+        while self.alive:
+            got = 0
+            while got < size:
+                n = self.proc.stdout.readinto(view[got:])
+                if not n:
+                    break
+                got += n
+            if got < size:
+                break
+            frame = np.frombuffer(bytes(buf), np.uint8).reshape(self.h, self.w, 3)
+            with self.cond:
+                self.frame = frame
+                self.seq += 1
+                self.cond.notify()
+        if self.seq == 0 and FfmpegFrames.gpu_scale:
+            FfmpegFrames.gpu_scale = False
+            log("GPU scaling produced no frames; falling back to CPU scaling")
+        with self.cond:
+            self.alive = False
+            self.cond.notify()
+        self.proc.kill()
+
+    def next(self, after_seq):
+        with self.cond:
+            while self.alive and self.seq <= after_seq:
+                if not self.cond.wait(timeout=8):
+                    raise RuntimeError("no frames from source for 8s")
+            if not self.alive:
+                raise RuntimeError("source stream ended")
+            return self.frame, self.seq
+
+    def close(self):
+        self.alive = False
+        self.proc.kill()
+
+
 def run(model):
-    src = stream.LatestFrame(stream.SRC_URL)
+    src = stream.LatestFrame(stream.SRC_URL) if DECODER == "opencv" else FfmpegFrames(stream.SRC_URL)
     emit({"t": "status", "state": "connected"})
     emit({"t": "reset"})
     stream.track_labels.reset()

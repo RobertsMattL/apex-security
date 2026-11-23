@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, renameSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CameraManager } from '../cameras/CameraManager.js';
@@ -43,6 +44,12 @@ interface CameraState {
   inFlight: Set<string>;
 }
 
+/**
+ * Event frames and clips. The `.noindex` suffix keeps macOS Spotlight from indexing
+ * every JPEG and MP4 as it is written (that alone cost more CPU than detection).
+ */
+const MEDIA_DIR = 'events.noindex';
+
 const TRACK_FORGET_MS = 10 * 60 * 1000;
 
 /**
@@ -60,6 +67,7 @@ const TRACK_FORGET_MS = 10 * 60 * 1000;
  */
 export class EventManager implements FrameSink {
   private state = new Map<string, CameraState>();
+  private mediaDir: string;
 
   constructor(
     private db: DB,
@@ -72,10 +80,23 @@ export class EventManager implements FrameSink {
     private now: () => number = Date.now,
   ) {
     bus.on('camera.removed', (id) => this.state.delete(id));
+    this.mediaDir = join(dataDir, MEDIA_DIR);
+    this.moveLegacyMedia();
     // Clips cut off by a restart have no index and can't be played.
     const stale = db.prepare("SELECT id, clip_path FROM events WHERE clip_state = 'recording'").all() as Array<{ id: string; clip_path: string | null }>;
     for (const r of stale) if (r.clip_path) void unlink(r.clip_path).catch(() => {});
     if (stale.length) db.prepare("UPDATE events SET clip_state = 'failed', clip_path = NULL WHERE clip_state = 'recording'").run();
+  }
+
+  /** Media used to live in data/events: move it (one rename) and repoint stored paths. */
+  private moveLegacyMedia() {
+    const old = join(this.dataDir, 'events');
+    if (!existsSync(old) || existsSync(this.mediaDir)) return;
+    renameSync(old, this.mediaDir);
+    for (const col of ['image_path', 'clip_path']) {
+      this.db.prepare(`UPDATE events SET ${col} = ? || substr(${col}, ?) WHERE ${col} LIKE ?`).run(this.mediaDir, old.length + 1, `${old}/%`);
+    }
+    log.info(`moved event media to ${this.mediaDir}`);
   }
 
   private cam(cameraId: string): CameraState {
@@ -132,8 +153,8 @@ export class EventManager implements FrameSink {
     const id = randomUUID();
     const createdAt = frame.ts || this.now();
     const day = new Date(createdAt).toISOString().slice(0, 10);
-    const path = join(this.dataDir, 'events', frame.cameraId, day, `${id}.jpg`);
-    const clipPath = this.clips && clipSec > 0 ? join(this.dataDir, 'events', frame.cameraId, day, `${id}.mp4`) : null;
+    const path = join(this.mediaDir, frame.cameraId, day, `${id}.jpg`);
+    const clipPath = this.clips && clipSec > 0 ? join(this.mediaDir, frame.cameraId, day, `${id}.mp4`) : null;
     // Start recording at once, alongside the snapshot, so the clip starts as close to the trigger as possible.
     const clip = clipPath ? this.clips!.record(id, frame.cameraId, clipPath, clipSec) : null;
     try {

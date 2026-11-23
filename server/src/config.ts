@@ -35,6 +35,8 @@ export interface Config {
     model: string;
     imgsz: number;
     fps: number;
+    /** Frames are scaled to this width (hardware decode via ffmpeg) before detection. */
+    width: number;
     device?: string;
     tracker?: string;
     enabled: boolean;
@@ -67,6 +69,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       model: env.DETECTOR_MODEL ?? 'yolo11s.pt',
       imgsz: num(env.DETECTOR_IMGSZ, 1280),
       fps: num(env.DETECTOR_FPS, 5),
+      width: num(env.DETECTOR_WIDTH, 1280),
       device: env.DETECTOR_DEVICE || undefined,
       tracker: env.DETECTOR_TRACKER || undefined,
       enabled: env.DETECTOR_ENABLED !== 'false',

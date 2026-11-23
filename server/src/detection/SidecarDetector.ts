@@ -50,6 +50,9 @@ export class SidecarDetector extends EventEmitter implements Detector {
       // stream.detect filters by this; listeners apply their own (higher) thresholds after.
       YOLO_CONF: String(Math.min(0.25, this.minConfidence)),
       DETECT_FPS: String(d.fps),
+      DETECT_WIDTH: String(d.width),
+      FFMPEG: this.config.ffmpeg,
+      FFPROBE: this.config.ffprobe,
       PYTHONUNBUFFERED: '1',
     };
     if (d.device) env.YOLO_DEVICE = d.device;
