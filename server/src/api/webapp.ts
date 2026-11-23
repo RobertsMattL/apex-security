@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { projectRoot } from '../config.js';
@@ -31,6 +31,12 @@ export function registerWebApp(app: FastifyInstance) {
       return reply.code(404).send({ error: 'not found' });
     }
   };
+  // Open tabs poll this and reload when the console's code changes, so they never run stale JS.
+  app.get('/web-version', async (_req, reply) => {
+    const times = await Promise.all(['index.html', 'app.js', 'app.css'].map((f) => stat(join(root, f)).then((s) => s.mtimeMs).catch(() => 0)));
+    reply.header('Cache-Control', 'no-store');
+    return { version: times.map((t) => Math.floor(t).toString(36)).join('.') };
+  });
   app.get('/', (_req, reply) => serve('index.html', reply));
   app.get('/web/*', (req, reply) => serve((req.params as { '*': string })['*'], reply));
 }

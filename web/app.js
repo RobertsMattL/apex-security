@@ -1153,3 +1153,18 @@ window.addEventListener('hashchange', render);
 
 render();
 if (state.signedIn) rt.start();
+
+// ---------------------------------------------------------------------------
+// self-update: reload open tabs when the console's code changes on the server
+// ---------------------------------------------------------------------------
+const webVersion = { loaded: null };
+async function checkWebVersion() {
+  try {
+    const { version } = await (await fetch('/web-version', { cache: 'no-store' })).json();
+    if (webVersion.loaded === null) webVersion.loaded = version;
+    else if (version !== webVersion.loaded && !document.activeElement?.closest?.('input, textarea')) location.reload();
+  } catch { /* server unreachable: try again later */ }
+}
+checkWebVersion();
+setInterval(checkWebVersion, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkWebVersion(); });
