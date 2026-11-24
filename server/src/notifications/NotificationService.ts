@@ -200,7 +200,7 @@ export class NotificationService implements EventSink {
     if (q.unread) where.push("COALESCE(d.state, 'pending') != 'read'");
     if (q.cameraId) where.push('n.camera_id = ?'), args.push(q.cameraId);
     if (q.before) where.push('n.created_at < ?'), args.push(q.before);
-    const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
+    const limit = Math.min(Math.max(q.limit ?? 50, 1), 1000);
     const rows = this.db
       .prepare(`SELECT n.*, e.label, e.confidence, e.image_path, c.name AS camera_name, d.state, d.read_at
                 FROM notifications n JOIN events e ON e.id = n.event_id JOIN cameras c ON c.id = n.camera_id

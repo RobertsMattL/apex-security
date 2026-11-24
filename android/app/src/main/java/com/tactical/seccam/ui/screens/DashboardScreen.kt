@@ -106,7 +106,7 @@ fun DashboardScreen(
                 if (activity.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) { Text("No detections yet.", style = Tac.Body.copy(color = Tac.TextFaint)) }
                 } else {
-                    items(activity.take(12), key = { "a" + it.id }, span = { GridItemSpan(maxLineSpan) }) { ev -> ActivityRow(ev) { repo.setEventSequence(activity.map { EventRef(it.id) }); onEvent(ev.id) } }
+                    items(activity, key = { "a" + it.id }, span = { GridItemSpan(maxLineSpan) }) { ev -> ActivityRow(ev) { repo.setEventSequence(activity.map { EventRef(it.id) }); onEvent(ev.id) } }
                 }
             }
         }

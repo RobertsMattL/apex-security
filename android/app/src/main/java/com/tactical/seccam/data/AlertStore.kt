@@ -90,6 +90,6 @@ class AlertStore(context: Context) {
     }
 
     companion object {
-        const val MAX = 500
+        const val MAX = 1000
     }
 }

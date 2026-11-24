@@ -76,7 +76,7 @@ fun CameraDetailScreen(repo: Repository, cameraId: String, onBack: () -> Unit, o
     // Slider drafts so dragging doesn't spam the server; committed on release.
     val drafts = remember { mutableStateMapOf<String, ListenerSettings>() }
 
-    LaunchedEffect(cameraId, eventsVersion) { runCatching { repo.api.events(cameraId, limit = 30) }.onSuccess { events = it } }
+    LaunchedEffect(cameraId, eventsVersion) { runCatching { repo.api.events(cameraId, limit = 500) }.onSuccess { events = it } }
 
     if (cam == null) {
         FullScreen { Column { TopBar("Camera", onBack = onBack); Text("Camera removed.", style = Tac.Body, modifier = Modifier.padding(20.dp)) } }

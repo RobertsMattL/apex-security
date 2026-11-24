@@ -263,7 +263,7 @@ export class EventManager implements FrameSink {
     if (q.cameraId) where.push('camera_id = ?'), args.push(q.cameraId);
     if (q.kind) where.push('kind = ?'), args.push(q.kind);
     if (q.before) where.push('created_at < ?'), args.push(q.before);
-    const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
+    const limit = Math.min(Math.max(q.limit ?? 50, 1), 1000);
     const rows = this.db
       .prepare(`SELECT * FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT ${limit}`)
       .all(...args) as Array<Record<string, unknown>>;

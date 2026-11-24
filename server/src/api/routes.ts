@@ -181,7 +181,7 @@ export function registerRoutes(app: FastifyInstance, d: ApiDeps) {
       serverTime: Date.now(),
       deviceId: me(req).deviceId,
       cameras: d.cameras.list(),
-      notifications: d.notifications.list(me(req).deviceId, { limit: 50 }),
+      notifications: d.notifications.list(me(req).deviceId, { limit: 500 }),
       unread: d.notifications.unreadCount(me(req).deviceId),
     }));
 

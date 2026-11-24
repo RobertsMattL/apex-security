@@ -94,7 +94,7 @@ class Repository(private val context: Context) {
             val b = api.bootstrap()
             _cameras.value = b.optJSONArray("cameras").objects().map(Camera::from)
             alerts.merge(b.optJSONArray("notifications").objects().map { AlertItem.from(it) })
-            _activity.value = api.events(limit = 30)
+            _activity.value = api.events(limit = 500)
             _lastError.value = null
         } catch (e: ApiException) {
             if (e.status == 401) signOut() else _lastError.value = e.message
@@ -168,7 +168,7 @@ class Repository(private val context: Context) {
             }
             "event" -> scope.launch {
                 runCatching { api.event(m.getJSONObject("event").getString("id")) }.onSuccess { ev ->
-                    _activity.update { (listOf(ev) + it.filterNot { x -> x.id == ev.id }).take(50) }
+                    _activity.update { (listOf(ev) + it.filterNot { x -> x.id == ev.id }).take(500) }
                     _eventsVersion.value = System.currentTimeMillis()
                 }
             }
