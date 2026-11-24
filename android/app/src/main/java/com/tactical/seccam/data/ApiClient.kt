@@ -154,5 +154,17 @@ class ApiClient(private val session: Session) {
         }
     }
 
+    /** Download a (signed) media URL to a file. Writes to a temp file first so a failed download never leaves a partial one. */
+    suspend fun download(path: String, dest: java.io.File) = withContext(Dispatchers.IO) {
+        dest.parentFile?.mkdirs()
+        val tmp = java.io.File(dest.path + ".part")
+        http.newCall(Request.Builder().url(absolute(path)).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiException(r.code, "Download failed (HTTP ${r.code})")
+            tmp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
+        }
+        if (!tmp.renameTo(dest)) throw java.io.IOException("Could not save file")
+        dest
+    }
+
     private fun String?.orNull(): Any = if (this.isNullOrBlank()) JSONObject.NULL else this
 }

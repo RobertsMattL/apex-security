@@ -49,6 +49,11 @@ import com.tactical.seccam.SecCamApp
 import com.tactical.seccam.ui.theme.Tac
 import kotlinx.coroutines.delay
 
+/** PlayerView backed by a TextureView, so Compose zoom transforms apply to the video. */
+@OptIn(UnstableApi::class)
+private fun texturePlayerView(ctx: android.content.Context): PlayerView =
+    android.view.LayoutInflater.from(ctx).inflate(com.tactical.seccam.R.layout.texture_player_view, null) as PlayerView
+
 private val repo @Composable get() = (LocalContext.current.applicationContext as SecCamApp).repo
 
 /**
@@ -126,18 +131,17 @@ fun LivePlayer(cameraId: String, modifier: Modifier = Modifier, online: Boolean 
         }
     }
 
-    Box(modifier.background(Color.Black)) {
+    val zoom = rememberZoomState(cameraId)
+    Box(modifier.background(Color.Black).pinchZoomInput(zoom)) {
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
+                texturePlayerView(ctx).apply {
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                     setKeepContentOnPlayerReset(true)
                     this.player = player
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().zoomed(zoom),
         )
         ScanlineOverlay()
         Box(Modifier.matchParentSize().cornerBrackets(Tac.Cyan.copy(alpha = 0.7f), 16.dp, 1.5.dp, 8.dp))
@@ -147,6 +151,7 @@ fun LivePlayer(cameraId: String, modifier: Modifier = Modifier, online: Boolean 
             Text(if (phase == "LIVE") "● REC/LIVE" else phase, style = Tac.DataSmall.copy(color = c))
         }
         Box(Modifier.align(Alignment.TopEnd).padding(14.dp)) { HudClock(Tac.DataSmall.copy(color = Tac.Text.copy(alpha = 0.8f))) }
+        ZoomBadge(zoom, Modifier.align(Alignment.BottomStart).padding(14.dp))
         if (phase != "LIVE") {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(phase, style = Tac.Title.copy(color = Tac.TextDim))
@@ -194,7 +199,7 @@ fun CameraSnapshot(cameraId: String, modifier: Modifier = Modifier, refreshMs: L
 
 /** Detection frame. URLs are signed and expire, so the cache key is the event id. */
 @Composable
-fun EventImage(eventId: String, url: String?, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop) {
+fun EventImage(eventId: String, url: String?, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, zoom: ZoomState? = null) {
     val repo = repo
     val context = LocalContext.current
     Box(modifier.background(Tac.Void)) {
@@ -207,7 +212,7 @@ fun EventImage(eventId: String, url: String?, modifier: Modifier = Modifier, con
                     .build(),
                 contentDescription = null,
                 contentScale = contentScale,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().then(if (zoom != null) Modifier.zoomed(zoom) else Modifier),
             )
         } else {
             Text("NO FRAME", style = Tac.Label.copy(color = Tac.TextFaint), modifier = Modifier.align(Alignment.Center))
@@ -222,7 +227,7 @@ fun EventImage(eventId: String, url: String?, modifier: Modifier = Modifier, con
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun ClipPlayer(eventId: String, url: String, active: Boolean, modifier: Modifier = Modifier) {
+fun ClipPlayer(eventId: String, url: String, active: Boolean, modifier: Modifier = Modifier, zoom: ZoomState? = null) {
     val context = LocalContext.current
     val repo = repo
     var paused by remember { mutableStateOf(false) }
@@ -268,16 +273,13 @@ fun ClipPlayer(eventId: String, url: String, active: Boolean, modifier: Modifier
     Box(modifier.background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
+                texturePlayerView(ctx).apply {
                     isClickable = false
                     isFocusable = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                     this.player = player
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(if (zoom != null) Modifier.zoomed(zoom) else Modifier),
         )
         // Tap to pause/resume; taps don't block the pager's horizontal drag.
         Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { paused = !paused })

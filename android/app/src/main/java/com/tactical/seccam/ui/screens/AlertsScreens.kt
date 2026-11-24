@@ -62,6 +62,11 @@ import com.tactical.seccam.ui.components.SectionHeader
 import com.tactical.seccam.ui.components.TacButton
 import com.tactical.seccam.ui.components.TopBar
 import com.tactical.seccam.ui.components.cornerBrackets
+import com.tactical.seccam.ui.components.ZoomBadge
+import com.tactical.seccam.ui.components.pinchZoomInput
+import com.tactical.seccam.ui.components.rememberZoomState
+import com.tactical.seccam.ui.components.shareEventMedia
+import androidx.compose.ui.platform.LocalContext
 import com.tactical.seccam.ui.theme.Tac
 
 /** Notification center: inbox grouped by day, filterable by unread / camera. */
@@ -244,12 +249,18 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
     val ev = cache[ref.eventId]
     val c = Tac.kindColor(ev?.kind ?: alert?.kind ?: "")
     val clipUrl = ev?.clipUrl
+    val context = LocalContext.current
+    var sharing by remember { mutableStateOf(false) }
+    var shareError by remember { mutableStateOf<String?>(null) }
+    // Zoom is per media view; leaving the page or switching clip/frame starts back at 1x.
+    val zoom = rememberZoomState(ref.eventId, showFrame, clipUrl != null)
+    LaunchedEffect(active) { if (!active) zoom.reset() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(14.dp)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp).pinchZoomInput(zoom)) {
             if (clipUrl != null && !showFrame) {
-                ClipPlayer(ref.eventId, clipUrl, active = active, modifier = Modifier.fillMaxSize())
+                ClipPlayer(ref.eventId, clipUrl, active = active, modifier = Modifier.fillMaxSize(), zoom = zoom)
             } else {
-                EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, zoom = zoom)
                 val badge = when (ev?.clipState) { "recording" -> "REC · CLIP RECORDING"; "failed" -> "CLIP UNAVAILABLE"; else -> if (clipUrl != null) "DETECTION FRAME" else null }
                 if (badge != null) Row(
                     Modifier.align(Alignment.TopStart).padding(10.dp).background(Tac.Void.copy(alpha = 0.72f), RoundedCornerShape(2.dp))
@@ -262,6 +273,7 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
             }
             onPrev?.let { NavArrow("‹", Modifier.align(Alignment.CenterStart).padding(start = 8.dp), it) }
             onNext?.let { NavArrow("›", Modifier.align(Alignment.CenterEnd).padding(end = 8.dp), it) }
+            ZoomBadge(zoom, Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp))
         }
         if (clipUrl != null) {
             Spacer(Modifier.height(10.dp))
@@ -292,6 +304,23 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
         val camId = ev?.cameraId ?: alert?.cameraId
         if (camId != null) TacButton("Go live ›", { onLive(camId) }, primary = true, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(10.dp))
+        if (ev != null && (ev.clipUrl != null || ev.imageUrl != null)) {
+            // Shares what is on screen: the clip, or the frame when that tab is selected or there is no clip.
+            val shareClip = ev.clipUrl != null && !showFrame
+            TacButton(
+                when { sharing -> "Preparing…"; shareClip -> "Share clip ⇪"; else -> "Share frame ⇪" },
+                {
+                    if (!sharing) scope.launch {
+                        sharing = true; shareError = null
+                        runCatching { shareEventMedia(context, repo, ev, shareClip) }.onFailure { shareError = "Share failed: ${it.message}" }
+                        sharing = false
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            shareError?.let { Text(it, style = Tac.DataSmall.copy(color = Tac.Red), modifier = Modifier.padding(top = 6.dp)) }
+            Spacer(Modifier.height(10.dp))
+        }
         TacButton(
             if (confirmDelete) "Confirm delete event" else "Delete event",
             {
