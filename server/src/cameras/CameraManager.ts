@@ -4,7 +4,7 @@ import type { Config } from '../config.js';
 import { tx, type DB } from '../db/database.js';
 import type { ListenerRegistry } from '../detection/listeners/index.js';
 import type { ListenerSettings } from '../detection/types.js';
-import { cameraPath, type TacticalRtspAdapter } from '../rtsp/TacticalRtspAdapter.js';
+import { cameraPath, livePath, type TacticalRtspAdapter } from '../rtsp/TacticalRtspAdapter.js';
 import type { Bus } from '../util/bus.js';
 import { logger } from '../util/log.js';
 import type { Secrets } from '../util/secrets.js';
@@ -50,6 +50,8 @@ export class CameraManager {
   private status = new Map<string, CameraStatus>();
   private poll?: NodeJS.Timeout;
   private detectorState = new Map<string, { state: CameraStatus['detector']; message?: string }>();
+  /** Video codec each viewer path was configured for (decides which SEI types to strip). */
+  private liveCodec = new Map<string, string>();
 
   constructor(
     private db: DB,
@@ -177,7 +179,9 @@ export class CameraManager {
     this.row(id);
     this.db.prepare('DELETE FROM cameras WHERE id = ?').run(id);
     this.status.delete(id);
+    this.liveCodec.delete(id);
     await this.rtsp.removePath(cameraPath(id)).catch((e) => log.warn('remove path failed', e));
+    await this.rtsp.removePath(livePath(id)).catch((e) => log.warn('remove path failed', e));
     this.bus.emit('camera.removed', id);
   }
 
@@ -226,11 +230,21 @@ export class CameraManager {
     const r = this.row(id);
     const name = cameraPath(id);
     try {
-      if (r.enabled) await this.rtsp.setPath(name, { source: this.sourceUrl(id), rtspTransport: r.transport });
-      else await this.rtsp.removePath(name);
+      if (r.enabled) {
+        await this.rtsp.setPath(name, { source: this.sourceUrl(id), rtspTransport: r.transport });
+        await this.applyLivePath(id, this.liveCodec.get(id) ?? 'H264');
+      } else {
+        await this.rtsp.removePath(name);
+        await this.rtsp.removePath(livePath(id));
+      }
     } catch (e) {
       log.error(`could not configure stream for ${r.name}`, e);
     }
+  }
+
+  private async applyLivePath(id: string, codec: string) {
+    await this.rtsp.setLivePath(id, codec);
+    this.liveCodec.set(id, codec);
   }
 
   async syncAll() {
@@ -248,6 +262,12 @@ export class CameraManager {
     for (const r of this.db.prepare('SELECT id, enabled FROM cameras').all() as Array<{ id: string; enabled: number }>) {
       const p = paths.get(cameraPath(r.id));
       const cur = this.getStatus(r.id);
+      // The viewer path is set up before the camera's codec is known; correct it once it is.
+      const codec = p?.ready ? p.tracks.find((t) => /^(H26[45]|AV1|VP[89]|M?JPEG|MPEG-[124] Video)/i.test(t)) : undefined;
+      if (r.enabled && codec && this.liveCodec.has(r.id) && this.liveCodec.get(r.id) !== codec) {
+        log.info(`camera ${r.id} video is ${codec}; updating viewer stream`);
+        await this.applyLivePath(r.id, codec).catch((e) => log.warn('viewer path update failed', e));
+      }
       const stream: CameraStatus['stream'] = !r.enabled ? 'disabled' : p?.ready ? 'online' : cur.stream === 'online' ? 'offline' : cur.stream === 'offline' ? 'offline' : 'connecting';
       const next: CameraStatus = {
         ...cur,

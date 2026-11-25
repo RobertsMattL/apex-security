@@ -36,6 +36,14 @@ export interface MediaMtxAuthRequest {
 export const cameraPath = (cameraId: string) => `cam_${cameraId}`;
 
 /**
+ * Path name of a camera's viewer stream: what mobile clients play. It is a video-only,
+ * stream-copied republish of `cam_<id>` with H.264/H.265 SEI units removed. Tapo and
+ * similar cameras embed malformed SEI that makes ExoPlayer's decoder fail every few
+ * seconds; clips and the web view already repackage the stream, which is why they don't.
+ */
+export const livePath = (cameraId: string) => `live_${cameraId}`;
+
+/**
  * Integration with tacticalRtsp's streaming layer: MediaMTX.
  *
  * tacticalRtsp uses MediaMTX for capture, fan-out and re-publishing (pi/mediamtx.yml).
@@ -87,7 +95,9 @@ export class TacticalRtspAdapter {
     const relay = (buf: Buffer) => {
       for (const line of buf.toString().split('\n')) {
         // MediaMTX logs every reader connect/disconnect at INF; keep WAR/ERR and source state.
-        if (/WAR|ERR|ready|not ready|source/.test(line) && line.trim()) log.info(line.trim().replace(/^\S+ \S+ /, ''));
+        // Also keep why a remote viewer's session ended (the loopback hops are noise).
+        const remoteClose = /\b(closed|is reading)\b/.test(line) && !/127\.0\.0\.1|\[::1\]/.test(line);
+        if ((/WAR|ERR|ready|not ready|source/.test(line) || remoteClose) && line.trim()) log.info(line.trim().replace(/^\S+ \S+ /, ''));
       }
     };
     proc.stdout!.on('data', relay);
@@ -193,6 +203,28 @@ paths: {}
     if (!r.ok) throw new Error(`MediaMTX rejected path ${name}: ${r.status} ${await r.text()}`);
   }
 
+  /**
+   * Configure a camera's viewer path. MediaMTX runs the ffmpeg republish only while
+   * someone is watching (runOnDemand) and stops it 10 s after the last viewer leaves.
+   * No re-encode: `-c copy` plus a bitstream filter, so the cost is negligible.
+   */
+  async setLivePath(cameraId: string, videoCodec: string) {
+    const u = encodeURIComponent;
+    const auth = `${u(this.secrets.internalRtspUser)}:${u(this.secrets.internalRtspPass)}`;
+    const base = `rtsp://${auth}@127.0.0.1:${this.config.mediamtx.rtspPort}`;
+    // SEI is NAL type 6 in H.264, 39/40 (prefix/suffix) in H.265. Other codecs pass through.
+    const bsf = /264/.test(videoCodec) ? "-bsf:v 'filter_units=remove_types=6'" : /265|HEVC/i.test(videoCodec) ? "-bsf:v 'filter_units=remove_types=39|40'" : '';
+    const cmd = [
+      `'${this.config.ffmpeg}' -hide_banner -loglevel error -rtsp_transport tcp -i '${base}/${cameraPath(cameraId)}'`,
+      `-map 0:v:0 -c copy ${bsf} -f rtsp -rtsp_transport tcp '${base}/${livePath(cameraId)}'`,
+    ].join(' ');
+    const conf = { runOnDemand: cmd, runOnDemandRestart: true, runOnDemandStartTimeout: '15s', runOnDemandCloseAfter: '10s' };
+    const name = livePath(cameraId);
+    let r = await this.api('POST', `/v3/config/paths/add/${name}`, conf);
+    if (r.status === 400) r = await this.api('POST', `/v3/config/paths/replace/${name}`, conf);
+    if (!r.ok) throw new Error(`MediaMTX rejected path ${name}: ${r.status} ${await r.text()}`);
+  }
+
   async removePath(name: string) {
     const r = await this.api('DELETE', `/v3/config/paths/delete/${name}`);
     if (!r.ok && r.status !== 404) throw new Error(`MediaMTX path delete ${name}: ${r.status}`);
@@ -215,20 +247,26 @@ paths: {}
     return `rtsp://${u(this.secrets.internalRtspUser)}:${u(this.secrets.internalRtspPass)}@127.0.0.1:${this.config.mediamtx.rtspPort}/${cameraPath(cameraId)}`;
   }
 
-  /** URL handed to a client; the stream token is the RTSP password. */
+  /** URL handed to a client (the viewer path); the stream token is the RTSP password. */
   clientReadUrl(cameraId: string, host: string, token: string) {
-    return `rtsp://stream:${encodeURIComponent(token)}@${host}:${this.config.mediamtx.rtspPort}/${cameraPath(cameraId)}`;
+    return `rtsp://stream:${encodeURIComponent(token)}@${host}:${this.config.mediamtx.rtspPort}/${livePath(cameraId)}`;
   }
 
-  /** Decide a MediaMTX auth callback. Only reads of camera paths are ever allowed. */
+  /**
+   * Decide a MediaMTX auth callback. Clients may only read camera and viewer paths with a
+   * stream token. The only publish ever allowed is the server's own republish into a
+   * viewer path, from localhost, with the internal credentials.
+   */
   async authorize(req: MediaMtxAuthRequest): Promise<boolean> {
     log.debug('auth request', { ...req, password: req.password ? `<${req.password.length} chars>` : '', token: req.token ? `<${req.token.length} chars>` : '' });
-    if (req.action !== 'read') return false;
-    const m = /^cam_(.+)$/.exec(req.path ?? '');
+    const m = /^(cam|live)_(.+)$/.exec(req.path ?? '');
     if (!m) return false;
     const isLocal = req.ip === '127.0.0.1' || req.ip === '::1';
-    if (isLocal && req.user === this.secrets.internalRtspUser && req.password === this.secrets.internalRtspPass) return true;
+    const isInternal = isLocal && req.user === this.secrets.internalRtspUser && req.password === this.secrets.internalRtspPass;
+    if (req.action === 'publish') return m[1] === 'live' && isInternal;
+    if (req.action !== 'read') return false;
+    if (isInternal) return true;
     const token = req.password || req.token || new URLSearchParams(req.query ?? '').get('token') || '';
-    return token ? this.authorizeReader(m[1], token) : false;
+    return token ? this.authorizeReader(m[2], token) : false;
   }
 }
