@@ -103,7 +103,11 @@ fun CameraSetupScreen(repo: Repository, onBack: () -> Unit, onCreated: (String) 
                         TacButton(if (testing) "Testing…" else "Run test", {
                             scope.launch {
                                 testing = true; error = null
-                                probe = runCatching { repo.api.testCamera(url, user, pass, transport) }.getOrElse { ProbeResult(false, it.message, null, 0) }
+                                probe = runCatching { repo.api.testCamera(url, user, pass, transport) }.getOrElse {
+                                    // The request never reached a camera: say it's the Apex server, not the camera, that is unreachable.
+                                    val msg = if (it is com.tactical.seccam.data.ApiException) it.message else "Apex server unreachable (${repo.session.serverUrl}): ${it.message}"
+                                    ProbeResult(false, msg, null, 0)
+                                }
                                 testing = false
                             }
                         }, enabled = urlOk && !testing, primary = !tested)
@@ -136,8 +140,13 @@ fun CameraSetupScreen(repo: Repository, onBack: () -> Unit, onCreated: (String) 
 
                 AnimatedVisibility(error != null) { Text(error ?: "", style = Tac.DataSmall.copy(color = Tac.Red), modifier = Modifier.padding(top = 10.dp)) }
                 Spacer(Modifier.height(16.dp))
+                Text(
+                    when { probe == null -> "Run the link test first."; probe?.ok == false -> "The test failed. You can still deploy; the server keeps retrying the camera."; name.isBlank() -> "Name the camera to deploy."; else -> "" },
+                    style = Tac.DataSmall.copy(color = Tac.TextFaint),
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
                 TacButton(
-                    if (creating) "Deploying…" else "Deploy camera",
+                    when { creating -> "Deploying…"; probe?.ok == false -> "Deploy anyway"; else -> "Deploy camera" },
                     onClick = {
                         scope.launch {
                             creating = true; error = null
@@ -153,7 +162,8 @@ fun CameraSetupScreen(repo: Repository, onBack: () -> Unit, onCreated: (String) 
                             creating = false
                         }
                     },
-                    enabled = tested && name.isNotBlank() && !creating,
+                    // A failed test doesn't block: the server keeps retrying the camera after it is added.
+                    enabled = probe != null && name.isNotBlank() && !creating,
                     primary = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

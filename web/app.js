@@ -860,6 +860,7 @@ function setupView() {
   const testBtn = btn('Run test', runTest);
   const deploy = btn('Deploy camera', create, { primary: true, block: true });
   const errEl = h('div.err');
+  const deployHint = h('div.data-sm', { style: { color: 'var(--text-faint)', marginBottom: '6px' } });
   const invalidate = () => { probe = null; refresh(); };
   const input = (label, key, attrs = {}, onChange = invalidate) =>
     h('label.field', {}, h('span.label', { text: label }), h('input.input', { value: f[key], oninput: (e) => { f[key] = e.target.value; onChange(); }, ...attrs }));
@@ -882,15 +883,18 @@ function setupView() {
       ? kv([['Result', 'SIGNAL ACQUIRED', 'var(--green)'], ['Video', `${probe.video.codec.toUpperCase()} ${probe.video.width}x${probe.video.height}${probe.video.fps ? ` @${probe.video.fps}fps` : ''}`], ['Latency', `${probe.latencyMs} ms`]])
       : h('div', {}, kv([['Result', 'NO SIGNAL', 'var(--red)']]), h('div.err', { text: probe.error }))) : '');
     result.parentElement?.style.setProperty('--br', probe ? (probe.ok ? 'var(--green)' : 'var(--red)') : 'transparent');
-    deploy.disabled = !probe?.ok || !f.name.trim() || creating;
-    deploy.textContent = creating ? 'Deploying…' : 'Deploy camera';
+    // A failed test doesn't block deployment: the server keeps retrying the camera.
+    deploy.disabled = !probe || !f.name.trim() || creating;
+    deploy.textContent = creating ? 'Deploying…' : probe && !probe.ok ? 'Deploy anyway' : 'Deploy camera';
+    deployHint.textContent = !probe ? 'Run the link test first.' : !probe.ok ? 'The test failed. You can still deploy; the server keeps retrying the camera.' : !f.name.trim() ? 'Name the camera to deploy.' : '';
     errEl.textContent = err;
     personRow.replaceChildren(toggleRow('Human detection', 'Alert when a person is detected', f.person, (v) => { f.person = v; refresh(); }, { c: 'var(--red)' }));
     animalRow.replaceChildren(toggleRow('Animal detection', 'Dogs, cats, birds, wildlife', f.animal, (v) => { f.animal = v; refresh(); }, { c: 'var(--amber)' }));
   }
   async function runTest() {
     testing = true; refresh();
-    probe = await api.post('/api/cameras/test', { rtspUrl: f.url.trim(), username: f.user || null, password: f.pass || null, transport: f.transport }).catch((e) => ({ ok: false, error: e.message }));
+    probe = await api.post('/api/cameras/test', { rtspUrl: f.url.trim(), username: f.user || null, password: f.pass || null, transport: f.transport })
+      .catch((e) => ({ ok: false, error: e.status ? e.message : `Apex server unreachable: ${e.message}` }));
     testing = false; refresh();
   }
   async function create() {
@@ -921,7 +925,7 @@ function setupView() {
       h('div.glass', {}, input('Camera name', 'name', { placeholder: 'Driveway', maxlength: '64' }, refresh)),
       sectionHeader('05 · Detection listeners'),
       h('div.glass', {}, personRow, animalRow, h('div.data-sm.faint', { text: 'Each event records a 10s clip, then detection resumes. Clip length, thresholds and alerts can be tuned per camera after deployment.' })),
-      errEl, h('div', { style: { height: '16px' } }), deploy));
+      errEl, h('div', { style: { height: '16px' } }), deployHint, deploy));
   refresh();
   return { el };
 }
