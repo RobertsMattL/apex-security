@@ -14,6 +14,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // Pre-filled on the sign-in screen. Override with -PapexServerUrl=http://host:8780
+        val serverUrl = (project.findProperty("apexServerUrl") as String?) ?: "http://100.69.103.181:8780"
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
     }
 
     buildTypes {
@@ -30,6 +33,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

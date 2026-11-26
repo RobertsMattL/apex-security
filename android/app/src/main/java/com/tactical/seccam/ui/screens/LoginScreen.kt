@@ -1,5 +1,7 @@
 package com.tactical.seccam.ui.screens
 
+import com.tactical.seccam.BuildConfig
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +42,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LoginScreen(repo: Repository) {
     val scope = rememberCoroutineScope()
-    var server by remember { mutableStateOf(repo.session.serverUrl.ifBlank { "http://192.168.1.10:8780" }) }
+    var server by remember { mutableStateOf(repo.session.serverUrl.ifBlank { BuildConfig.DEFAULT_SERVER_URL }) }
     var user by remember { mutableStateOf(repo.session.username.ifBlank { "admin" }) }
     var pass by remember { mutableStateOf("") }
     var setupRequired by remember { mutableStateOf<Boolean?>(null) }
@@ -72,7 +74,7 @@ fun LoginScreen(repo: Repository) {
 
             GlassPanel(Modifier.fillMaxWidth().widthIn(max = 460.dp), accent = Tac.Cyan.copy(alpha = 0.6f), padding = 18.dp) {
                 Text("// UPLINK", style = Tac.Label.copy(color = Tac.Cyan))
-                TacField("Server address", server, { server = it; setupRequired = null; status = null }, placeholder = "http://192.168.1.10:8780", keyboard = KeyboardType.Uri)
+                TacField("Server address", server, { server = it; setupRequired = null; status = null }, placeholder = BuildConfig.DEFAULT_SERVER_URL, keyboard = KeyboardType.Uri)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TacButton("Probe", { probe() }, enabled = !busy)
                     status?.let { Text(it, style = Tac.DataSmall.copy(color = Tac.Green)) }
