@@ -252,7 +252,8 @@ private fun Scrubber(frac: Float, enabled: Boolean, onScrub: (Float?) -> Unit) {
         Box(Modifier.fillMaxWidth().height(3.dp).background(Tac.Hairline)) {
             Box(Modifier.fillMaxHeight().fillMaxWidth(frac).background(Tac.Cyan))
         }
-        val x = with(LocalDensity.current) { ((frac * widthPx) - thumbPx / 2).coerceIn(0f, widthPx - thumbPx).toDp() }
+        // Before the first measure widthPx is a placeholder smaller than the thumb: keep the range non-empty.
+        val x = with(LocalDensity.current) { ((frac * widthPx) - thumbPx / 2).coerceIn(0f, (widthPx - thumbPx).coerceAtLeast(0f)).toDp() }
         Box(Modifier.offset(x = x).size(thumb).background(Tac.Cyan, CircleShape))
     }
 }
