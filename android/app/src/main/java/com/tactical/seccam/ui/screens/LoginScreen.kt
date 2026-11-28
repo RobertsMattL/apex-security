@@ -48,7 +48,8 @@ fun LoginScreen(repo: Repository) {
     var setupRequired by remember { mutableStateOf<Boolean?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // Start with the reason the app signed itself out (e.g. the server rejected the saved login), if any.
+    var error by remember { mutableStateOf(repo.signOutReason.value) }
 
     fun probe() = scope.launch {
         busy = true; error = null; status = null

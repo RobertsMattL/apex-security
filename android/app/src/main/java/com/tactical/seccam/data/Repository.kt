@@ -53,7 +53,15 @@ class Repository(private val context: Context) {
     val eventSequence: StateFlow<List<EventRef>> = _eventSequence.asStateFlow()
     fun setEventSequence(list: List<EventRef>) { _eventSequence.value = list }
 
-    val realtime = RealtimeClient(api, session, scope, ::onMessage, onConnected = { scope.launch { refresh() } })
+    /** Why the app signed the user out on its own (shown on the sign-in screen); null after a manual sign-out. */
+    private val _signOutReason = MutableStateFlow<String?>(null)
+    val signOutReason: StateFlow<String?> = _signOutReason.asStateFlow()
+
+    val realtime = RealtimeClient(
+        api, session, scope, ::onMessage,
+        onConnected = { scope.launch { refresh() } },
+        onAuthRejected = { signOut(SESSION_REJECTED) },
+    )
     val link get() = realtime.state
 
     init {
@@ -66,6 +74,7 @@ class Repository(private val context: Context) {
     fun startIfSignedIn() {
         if (!session.signedIn) return
         _signedIn.value = true
+        _signOutReason.value = null
         realtime.start()
         ConnectionService.start(context)
     }
@@ -78,7 +87,8 @@ class Repository(private val context: Context) {
         startIfSignedIn()
     }
 
-    fun signOut() {
+    fun signOut(reason: String? = null) {
+        _signOutReason.value = reason
         realtime.stop()
         ConnectionService.stop(context)
         session.clearTokens()
@@ -97,7 +107,7 @@ class Repository(private val context: Context) {
             _activity.value = api.events(limit = 500)
             _lastError.value = null
         } catch (e: ApiException) {
-            if (e.status == 401) signOut() else _lastError.value = e.message
+            if (e.status == 401) signOut(SESSION_REJECTED) else _lastError.value = e.message
         } catch (e: Exception) {
             _lastError.value = e.message
         }
@@ -177,5 +187,9 @@ class Repository(private val context: Context) {
             "welcome", "pong", "ack.ok", "read.ok" -> Unit
             "error" -> Log.w("Repository", "server error: ${m.optString("error")}")
         }
+    }
+
+    private companion object {
+        const val SESSION_REJECTED = "Signed out: the server no longer accepts this phone's saved login. Sign in again to reconnect."
     }
 }

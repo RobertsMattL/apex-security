@@ -32,6 +32,8 @@ class RealtimeClient(
     private val scope: CoroutineScope,
     private val onMessage: (JSONObject) -> Unit,
     private val onConnected: () -> Unit,
+    /** The server rejected our refresh token: the session is dead and the user must sign in again. */
+    private val onAuthRejected: () -> Unit,
 ) {
     private val _state = MutableStateFlow(LinkState.OFFLINE)
     val state: StateFlow<LinkState> = _state.asStateFlow()
@@ -90,8 +92,9 @@ class RealtimeClient(
                 api.accessToken(forceRefresh)
             } catch (e: ApiException) {
                 if (e.status == 401) {
-                    Log.w(TAG, "refresh rejected; signed out")
+                    Log.w(TAG, "refresh rejected; signing out")
                     _state.value = LinkState.OFFLINE
+                    onAuthRejected()
                     return@launch
                 }
                 scheduleReconnect(); return@launch
