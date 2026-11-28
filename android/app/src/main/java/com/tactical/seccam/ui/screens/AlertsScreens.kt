@@ -49,7 +49,9 @@ import com.tactical.seccam.data.DetectionEventItem
 import com.tactical.seccam.data.EventRef
 import com.tactical.seccam.data.Repository
 import com.tactical.seccam.ui.components.Chip
+import com.tactical.seccam.ui.components.ClipControls
 import com.tactical.seccam.ui.components.ClipPlayer
+import com.tactical.seccam.ui.components.rememberClipState
 import com.tactical.seccam.ui.components.Segmented
 import com.tactical.seccam.ui.components.StatusPip
 import com.tactical.seccam.ui.components.EmptyState
@@ -255,10 +257,11 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
     // Zoom is per media view; leaving the page or switching clip/frame starts back at 1x.
     val zoom = rememberZoomState(ref.eventId, showFrame, clipUrl != null)
     LaunchedEffect(active) { if (!active) zoom.reset() }
+    val clip = if (clipUrl != null && !showFrame) rememberClipState(ref.eventId, clipUrl, active) else null
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(14.dp)) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(3.dp)).cornerBrackets(c, 18.dp, 2.dp, 6.dp).pinchZoomInput(zoom)) {
-            if (clipUrl != null && !showFrame) {
-                ClipPlayer(ref.eventId, clipUrl, active = active, modifier = Modifier.fillMaxSize(), zoom = zoom)
+            if (clip != null) {
+                ClipPlayer(clip, modifier = Modifier.fillMaxSize(), zoom = zoom)
             } else {
                 EventImage(ref.eventId, ev?.imageUrl ?: alert?.imageUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, zoom = zoom)
                 val badge = when (ev?.clipState) { "recording" -> "REC · CLIP RECORDING"; "failed" -> "CLIP UNAVAILABLE"; else -> if (clipUrl != null) "DETECTION FRAME" else null }
@@ -274,6 +277,10 @@ private fun EventPage(repo: Repository, ref: EventRef, cache: MutableMap<String,
             onPrev?.let { NavArrow("‹", Modifier.align(Alignment.CenterStart).padding(start = 8.dp), it) }
             onNext?.let { NavArrow("›", Modifier.align(Alignment.CenterEnd).padding(end = 8.dp), it) }
             ZoomBadge(zoom, Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp))
+        }
+        if (clip != null) {
+            Spacer(Modifier.height(6.dp))
+            ClipControls(clip)
         }
         if (clipUrl != null) {
             Spacer(Modifier.height(10.dp))

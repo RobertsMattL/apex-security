@@ -51,7 +51,7 @@ import kotlinx.coroutines.delay
 
 /** PlayerView backed by a TextureView, so Compose zoom transforms apply to the video. */
 @OptIn(UnstableApi::class)
-private fun texturePlayerView(ctx: android.content.Context): PlayerView =
+internal fun texturePlayerView(ctx: android.content.Context): PlayerView =
     android.view.LayoutInflater.from(ctx).inflate(com.tactical.seccam.R.layout.texture_player_view, null) as PlayerView
 
 private val repo @Composable get() = (LocalContext.current.applicationContext as SecCamApp).repo
@@ -216,83 +216,6 @@ fun EventImage(eventId: String, url: String?, modifier: Modifier = Modifier, con
             )
         } else {
             Text("NO FRAME", style = Tac.Label.copy(color = Tac.TextFaint), modifier = Modifier.align(Alignment.Center))
-        }
-    }
-}
-
-/**
- * Event clip playback: progressive MP4 from a signed URL, looped and muted (clips
- * have no audio). Plays only while its pager page is the settled one. Our own tap
- * overlay replaces PlayerView's controller so horizontal swipes still reach the pager.
- */
-@OptIn(UnstableApi::class)
-@Composable
-fun ClipPlayer(eventId: String, url: String, active: Boolean, modifier: Modifier = Modifier, zoom: ZoomState? = null) {
-    val context = LocalContext.current
-    val repo = repo
-    var paused by remember { mutableStateOf(false) }
-    var progress by remember { mutableFloatStateOf(0f) }
-    var position by remember { mutableStateOf(0L to 0L) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val player = remember(eventId) {
-        ExoPlayer.Builder(context).build().apply {
-            volume = 0f
-            repeatMode = Player.REPEAT_MODE_ONE
-            setMediaItem(MediaItem.fromUri(repo.api.absolute(url)))
-            prepare()
-        }
-    }
-    DisposableEffect(player) {
-        val l = object : Player.Listener {
-            override fun onPlayerError(e: PlaybackException) { error = e.errorCodeName.removePrefix("ERROR_CODE_") }
-        }
-        player.addListener(l)
-        onDispose { player.removeListener(l); player.release() }
-    }
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var resumed by remember { mutableStateOf(true) }
-    DisposableEffect(lifecycle) {
-        val obs = LifecycleEventObserver { _, e ->
-            if (e == Lifecycle.Event.ON_PAUSE) resumed = false
-            if (e == Lifecycle.Event.ON_RESUME) resumed = true
-        }
-        lifecycle.addObserver(obs)
-        onDispose { lifecycle.removeObserver(obs) }
-    }
-    LaunchedEffect(active) { if (!active) { player.seekTo(0); paused = false } }
-    player.playWhenReady = active && resumed && !paused
-    LaunchedEffect(player) {
-        while (true) {
-            val d = player.duration.takeIf { it > 0 } ?: 0L
-            position = player.currentPosition to d
-            progress = if (d > 0) (player.currentPosition.toFloat() / d).coerceIn(0f, 1f) else 0f
-            delay(100)
-        }
-    }
-
-    Box(modifier.background(Color.Black)) {
-        AndroidView(
-            factory = { ctx ->
-                texturePlayerView(ctx).apply {
-                    isClickable = false
-                    isFocusable = false
-                    this.player = player
-                }
-            },
-            modifier = Modifier.fillMaxSize().then(if (zoom != null) Modifier.zoomed(zoom) else Modifier),
-        )
-        // Tap to pause/resume; taps don't block the pager's horizontal drag.
-        Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { paused = !paused })
-        Row(Modifier.align(Alignment.TopStart).padding(10.dp).background(Tac.Void.copy(alpha = 0.6f)).padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (error != null) "CLIP ERROR · $error" else if (paused) "❚❚ PAUSED" else "▶ CLIP", style = Tac.DataSmall.copy(color = if (error != null) Tac.Amber else Tac.Cyan))
-        }
-        Text(
-            "${Fmt.mmss(position.first)} / ${Fmt.mmss(position.second)}",
-            style = Tac.DataSmall.copy(color = Tac.Text.copy(alpha = 0.85f)),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(horizontal = 10.dp, vertical = 8.dp),
-        )
-        Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(3.dp).background(Tac.Hairline)) {
-            Box(Modifier.fillMaxHeight().fillMaxWidth(progress).background(Tac.Cyan))
         }
     }
 }
